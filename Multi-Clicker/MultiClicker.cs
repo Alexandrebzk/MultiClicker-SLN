@@ -8,6 +8,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
+using static MultiClicker.WindowManagement;
 
 namespace MultiClicker
 {
@@ -215,11 +216,12 @@ namespace MultiClicker
 
             // Handle the Click event to close the form
             closeButton.Click += (s, ev) => this.Close();
-                
+
             // Add the close button to the title bar
             titleBar.Controls.Add(closeButton);
             titleBar.Controls.Add(helpButton);
             generateUI();
+            StartCheckingForegroundWindowForText();
         }
 
         public void generateUI()
@@ -246,20 +248,14 @@ namespace MultiClicker
                         if (inputForm.ShowDialog() == DialogResult.OK)
                         {
                             string inputText = inputForm.InputText;
-                            Debug.WriteLine(inputText);
-                            WindowManagement.sentTextToHandles(inputText, WindowManagement.windowHandles);
+                            WindowManagement.sentTextToHandles(inputText, WindowManagement.windowHandles.Keys.ToList());
                         }
                     }
                 });
             };
 
-            foreach (IntPtr handle in WindowManagement.windowHandles)
+            foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
             {
-                // Get the window name
-                StringBuilder windowName = new StringBuilder(256);
-                GetWindowText(handle, windowName, windowName.Capacity);
-                string fullWindowName = windowName.ToString();
-                int index = fullWindowName.IndexOf(" - ");
 
                 ExtendedPanel panel = new ExtendedPanel
                 {
@@ -269,12 +265,13 @@ namespace MultiClicker
                     BackgroundImage = Image.FromFile(@"cosmetics\default.png"), // Set the background image
                     BackgroundImagePath = @"cosmetics\default.png",
                     BackgroundImageLayout = ImageLayout.Center, // Stretch the image to fill the panel
-                    Tag = handle // Store the window handle in the Tag property,
+                    Tag = entry.Key, // Store the window handle in the Tag property,
+                    Name = entry.Value.CharacterName
                 };
 
                 Label label = new Label
                 {
-                    Text = windowName.ToString(),
+                    Text = entry.Value.CharacterName,
                     AutoSize = false,
                     Dock = DockStyle.Bottom,
                     ForeColor = Color.White,
@@ -282,16 +279,6 @@ namespace MultiClicker
                     Font = new Font("Arial", 8.25F, FontStyle.Bold),
                     BackColor = Color.Transparent // Make the label background transparent
                 };
-                if (index > 0)
-                {
-                    string shortenedWindowName = fullWindowName.Substring(0, index);
-                    label.Text = shortenedWindowName;
-                    panel.Name = shortenedWindowName;
-                }
-                else
-                {
-                    label.Text = fullWindowName;
-                }
 
                 panel.Controls.Add(label);
                 panel.Click += PanelManagement.Panel_Click;
@@ -305,11 +292,11 @@ namespace MultiClicker
                 {
                     ConfigManagement.config.Panels[panel.Name] = new PanelConfig { Background = @"cosmetics\default.png" };
                 }
-
             }
             RearrangePanels();
             totalHeight += titleBar.Height;
             this.ClientSize = new Size(totalWidth, totalHeight);
+            this.Location = new Point(Screen.PrimaryScreen.WorkingArea.Width - totalWidth - (Screen.PrimaryScreen.WorkingArea.Width/20), 0 + totalHeight + (Screen.PrimaryScreen.WorkingArea.Height / 10));
             PanelManagement.Panel_Click(flowLayoutPanel.Controls[0], EventArgs.Empty);
 
             // Serialize the updated configuration to a JSON string
@@ -332,7 +319,6 @@ namespace MultiClicker
                 {
                     PanelManagement.SetPanelBackground(extendedPanel, panel.Value.Background);
                     panels.Add(extendedPanel);
-                    Debug.WriteLine(panel.Key);
                 }
             }
 
