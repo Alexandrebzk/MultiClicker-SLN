@@ -248,10 +248,18 @@ namespace MultiClicker
                 SimulateKeyPress(handle, Keys.Enter, 500);
             }
         }
+        private static object lockObject = new object();
+
         public static void StartCheckingForegroundWindowForText()
         {
             System.Timers.Timer timer = new System.Timers.Timer(700);
-            timer.Elapsed += (sender, e) => CheckForegroundWindowForText();
+            timer.Elapsed += (sender, e) =>
+            {
+                lock (lockObject)
+                {
+                    CheckForegroundWindowForText();
+                }
+            };
             timer.Start();
         }
         private static void CheckForegroundWindowForText()
