@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using static MultiClicker.MultiClicker;
+using static MultiClicker.WindowManagement;
 
 namespace MultiClicker
 {
@@ -51,7 +52,7 @@ namespace MultiClicker
 
         public static IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
-            if (!IsRelatedHandle())
+            if (!WindowManagement.IsRelatedHandle(GetForegroundWindow()))
             {
                 return CallNextHookEx(MultiClicker._keyboardHookID, nCode, wParam, lParam);
             }
@@ -76,10 +77,10 @@ namespace MultiClicker
                             case Keys.F3:
                                     Task.Run(() =>
                                     {
-                                        foreach (IntPtr handle in WindowManagement.windowHandles)
+                                        foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
                                         {
                                             int delay = random.Next(200, 400);
-                                            WindowManagement.SimulateKeyPress(handle, Keys.H, delay);
+                                            WindowManagement.SimulateKeyPress(entry.Key, Keys.H, delay);
                                         }
                                     });
                                 keysPressed.Remove(key);
@@ -88,22 +89,17 @@ namespace MultiClicker
                                 Task.Run(() =>
                                 {
                                     List<String> commands = new List<String>();
-                                    foreach (IntPtr handle in WindowManagement.windowHandles)
+                                    foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
                                     {
-                                        if (handle == WindowManagement.windowHandles[0])
+                                        if (entry.Value == WindowManagement.windowHandles.First().Value)
                                             continue;
                                         int delay = random.Next(800, 1200);
-                                        StringBuilder windowName = new StringBuilder(256);
-                                        GetWindowText(handle, windowName, windowName.Capacity);
-                                        string fullWindowName = windowName.ToString();
-                                        int index = fullWindowName.IndexOf(" - ");
-                                        string characterName = fullWindowName.Substring(0, index);
-                                        string inviteCommand = "/invite " + characterName;
+                                        string inviteCommand = "/invite " + entry.Value.CharacterName;
                                         commands.Add(inviteCommand);
                                     }
                                     commands.ForEach(command =>
                                     {
-                                        WindowManagement.sentTextToHandles(command, new List<IntPtr> { WindowManagement.windowHandles[0] });
+                                        WindowManagement.sentTextToHandles(command, new List<IntPtr> { WindowManagement.windowHandles.First().Key });
                                     });
                                 });
                                 keysPressed.Remove(key);
@@ -125,20 +121,9 @@ namespace MultiClicker
             return CallNextHookEx(MultiClicker._keyboardHookID, nCode, wParam, lParam);
         }
 
-        private static Boolean IsRelatedHandle()
-        {
-            IntPtr activeWindowHandle = GetForegroundWindow();
-
-            if (!WindowManagement.windowHandles.Contains(activeWindowHandle))
-            {
-                return false;
-            }
-            return true;
-        }
-
         public static IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
-            if (!IsRelatedHandle())
+            if (!WindowManagement.IsRelatedHandle(GetForegroundWindow()))
             {
                 return CallNextHookEx(MultiClicker._keyboardHookID, nCode, wParam, lParam);
             }
@@ -149,7 +134,7 @@ namespace MultiClicker
                 IntPtr hWnd = WindowFromPoint(cursorPos);
                 MouseMessages message = (MouseMessages)wParam;
 
-                if (WindowManagement.windowHandles.Contains(hWnd))
+                if (WindowManagement.windowHandles.ContainsKey(hWnd))
                 {
                     switch (message)
                     {

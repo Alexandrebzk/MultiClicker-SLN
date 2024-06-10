@@ -1,10 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Tesseract;
 using static MultiClicker.MultiClicker;
 
 namespace MultiClicker
@@ -44,18 +47,27 @@ namespace MultiClicker
 
         [DllImport("user32.dll")]
         public static extern IntPtr PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")]
+        static extern IntPtr GetForegroundWindow();
 
         private const int ALT = 0xA4;
         private const int EXTENDEDKEY = 0x1;
         public const int SM_CYCAPTION = 4;
         private const int KEYUP = 0x2;
         private const uint Restore = 9;
-        public static List<IntPtr> windowHandles = new List<IntPtr>();
+        public static Dictionary<IntPtr, WindowInfo> windowHandles = new Dictionary<IntPtr, WindowInfo>();
 
-
-        public static List<IntPtr> FindWindows(string windowTitle)
+        public class WindowInfo
         {
-            List<IntPtr> windowHandles = new List<IntPtr>();
+            public string WindowName { get; set; }
+            public string CharacterName { get; set; }
+            public ExtendedPanel relatedPanel { get; set; }
+        }
+
+        public static Rectangle SearchCombatArea;
+        public static Dictionary<IntPtr, WindowInfo> FindWindows(string windowTitle)
+        {
+            Dictionary<IntPtr, WindowInfo> windowHandles = new Dictionary<IntPtr, WindowInfo>();
 
             EnumWindows((hWnd, lParam) =>
             {
@@ -68,9 +80,14 @@ namespace MultiClicker
 
                 try
                 {
-                    if ((windowName.ToString().Contains(windowTitle) && !windowHandles.Contains(hWnd)))
+                    if (windowName.ToString().Contains(windowTitle) && !windowHandles.ContainsKey(hWnd))
                     {
-                        windowHandles.Add(hWnd);
+                        int index = windowName.ToString().IndexOf(" - ");
+                        windowHandles.Add(hWnd, new WindowInfo
+                        {
+                            CharacterName = windowName.ToString().Substring(0, index),
+                            WindowName = windowName.ToString(),
+                        });
                     }
                 }
                 catch (System.ComponentModel.Win32Exception)
@@ -80,10 +97,26 @@ namespace MultiClicker
 
                 return true;
             }, IntPtr.Zero);
+            SearchCombatArea = GetSearchAreaQuarter();
 
             return windowHandles;
         }
+        private static Rectangle GetSearchAreaQuarter()
+        {
+            // Get the screen's size
+            int screenWidth = Screen.PrimaryScreen.Bounds.Width;
+            int screenHeight = Screen.PrimaryScreen.Bounds.Height;
 
+            // Calculate the size of the quarter rectangle
+            int width = screenWidth / 4;
+            int height = screenHeight / 2;
+
+            // Create the quarter rectangle
+            Rectangle quarterRect = new Rectangle(0, 0, width, height);
+
+
+            return quarterRect;
+        }
         public static void SimulateClick(IntPtr windowHandle, int x, int y, int delay)
         {
             // Wait for a random amount of time between 1 and 1000 milliseconds
@@ -105,7 +138,7 @@ namespace MultiClicker
 
             SendMessage(windowHandle, Constants.WM_LBUTTONDOWN, new IntPtr(1), lParam);
             SendMessage(windowHandle, Constants.WM_LBUTTONUP, IntPtr.Zero, lParam);
-            System.Threading.Thread.Sleep(SystemInformation.DoubleClickTime/2);
+            System.Threading.Thread.Sleep(SystemInformation.DoubleClickTime / 2);
             SendMessage(windowHandle, Constants.WM_LBUTTONDOWN, new IntPtr(1), lParam);
             SendMessage(windowHandle, Constants.WM_LBUTTONUP, IntPtr.Zero, lParam);
         }
@@ -148,14 +181,14 @@ namespace MultiClicker
             Task.Run(() =>
             {
                 Random random = new Random();
-                foreach (IntPtr handle in WindowManagement.windowHandles)
+                foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
                 {
                     int delay = noDelay ? 20 : random.Next(200, 400);
                     RECT rect = new RECT();
-                    GetWindowRect(handle, ref rect);
+                    GetWindowRect(entry.Key, ref rect);
 
                     POINT finalPositions = AdjustClickPosition(rect, cursorPos);
-                    SimulateClick(handle, finalPositions.X, finalPositions.Y, delay);
+                    SimulateClick(entry.Key, finalPositions.X, finalPositions.Y, delay);
                 }
             });
         }
@@ -165,13 +198,13 @@ namespace MultiClicker
             Task.Run(() =>
             {
                 Random random = new Random();
-                foreach (IntPtr handle in WindowManagement.windowHandles)
+                foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
                 {
                     RECT rect = new RECT();
-                    GetWindowRect(handle, ref rect);
+                    GetWindowRect(entry.Key, ref rect);
 
                     POINT finalPositions = AdjustClickPosition(rect, cursorPos);
-                    SimulateDoubleClick(handle, finalPositions.X, finalPositions.Y);
+                    SimulateDoubleClick(entry.Key, finalPositions.X, finalPositions.Y);
                 }
             });
         }
@@ -214,6 +247,65 @@ namespace MultiClicker
                 SimulateKeyPress(handle, Keys.Enter, 150);
                 SimulateKeyPress(handle, Keys.Enter, 500);
             }
+        }
+        public static void StartCheckingForegroundWindowForText()
+        {
+            System.Timers.Timer timer = new System.Timers.Timer(700);
+            timer.Elapsed += (sender, e) => CheckForegroundWindowForText();
+            timer.Start();
+        }
+        private static void CheckForegroundWindowForText()
+        {
+
+            Bitmap captureBitmap = CaptureCombatArea();
+            using (var engine = new TesseractEngine(@"./tessdata", "fra", EngineMode.Default))
+            {
+                // Recognize the text from the captured image
+                using (var pix = PixConverter.ToPix(captureBitmap))
+                {
+                    using (var page = engine.Process(pix))
+                    {
+                        string recognizedText = page.GetText();
+
+                        // Compare the recognized text with the text from each asset
+                        foreach (var window in windowHandles)
+                        {
+                            var value = window.Value;
+                            if (recognizedText.Contains(value.CharacterName))
+                            {
+                                PanelManagement.Panel_Select(value.CharacterName);
+                            };
+                        }
+                    }
+                    captureBitmap.Dispose();
+                }
+            }
+        }
+        private static Bitmap CaptureCombatArea()
+        {
+
+            int width = (SearchCombatArea.Right - SearchCombatArea.Left);
+            int height = (SearchCombatArea.Bottom - SearchCombatArea.Top);
+
+            // Create a bitmap to hold the captured image
+            Bitmap bitmap = new Bitmap(width, height);
+
+            // Use Graphics.CopyFromScreen to capture the specified area of the window
+            using (Graphics g = Graphics.FromImage(bitmap))
+            {
+                g.CopyFromScreen(SearchCombatArea.Left, SearchCombatArea.Top, 0, 0, new Size(width, height));
+            }
+            return bitmap;
+        }
+
+        public static Boolean IsRelatedHandle(IntPtr activeWindowHandle)
+        {
+
+            if (!WindowManagement.windowHandles.ContainsKey(activeWindowHandle))
+            {
+                return false;
+            }
+            return true;
         }
     }
 }

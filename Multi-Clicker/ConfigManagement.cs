@@ -34,12 +34,12 @@ namespace MultiClicker
             }
             else
             {
-                Debug.WriteLine("Config file not found: " + configFilePath);
                 config = new Config
                 {
                     Panels = new Dictionary<string, PanelConfig>(),
                     Positions = new Dictionary<string, Position>()
                 };
+                SaveConfig();
             }
         }
 

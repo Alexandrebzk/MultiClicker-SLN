@@ -1,4 +1,6 @@
-﻿namespace MultiClicker
+﻿using System.Windows.Forms;
+
+namespace MultiClicker
 {
     partial class MultiClicker
     {
@@ -35,6 +37,7 @@
             this.Name = "MultiClicker";
             this.Text = "MultiClicker";
             ConfigManagement.LoadConfig();
+            this.StartPosition = FormStartPosition.Manual;
             this.Load += new System.EventHandler(this.Form1_Load);
             this.ResumeLayout(false);
             this.PerformLayout();

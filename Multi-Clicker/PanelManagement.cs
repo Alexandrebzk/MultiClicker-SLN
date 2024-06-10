@@ -83,5 +83,23 @@ namespace MultiClicker
             selectedPanel = panel;
             WindowManagement.SetHandleToForeGround(handle);
         }
+
+        public static void Panel_Select(String panelName)
+        {
+
+            ExtendedPanel panel = flowLayoutPanel.Controls.OfType<ExtendedPanel>().FirstOrDefault(p => p.Name == panelName);
+            IntPtr handle = (IntPtr)panel.Tag;
+
+            if (handle == GetForegroundWindow()) return;
+            // If a panel was previously selected, remove its border
+            if (selectedPanel != null)
+            {
+                selectedPanel.BackColor = Color.Transparent;
+            }
+
+            panel.BackColor = ColorTranslator.FromHtml("#ddfe00");
+            selectedPanel = panel;
+            WindowManagement.SetHandleToForeGround(handle);
+        }
     }
 }
