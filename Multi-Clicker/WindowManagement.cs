@@ -108,7 +108,7 @@ namespace MultiClicker
             int screenHeight = Screen.PrimaryScreen.Bounds.Height;
 
             // Calculate the size of the quarter rectangle
-            int width = screenWidth / 4;
+            int width = screenWidth / 5;
             int height = screenHeight / 2;
 
             // Create the quarter rectangle
@@ -236,16 +236,16 @@ namespace MultiClicker
             };
         }
 
-        public static void sentTextToHandles(string inputText, List<IntPtr> handles)
+        public static void sentTextToHandles(string inputText, List<KeyValuePair<IntPtr, WindowInfo>> handles)
         {
-            foreach (IntPtr handle in handles)
+            foreach (KeyValuePair<IntPtr, WindowInfo> entry in handles)
             {
-                SetHandleToForeGround(handle);
+                PanelManagement.Panel_Select(entry.Value.CharacterName);
                 System.Threading.Thread.Sleep(500);
-                SimulateKeyPress(handle, Keys.Tab, 150);
+                SimulateKeyPress(entry.Key, Keys.Tab, 150);
                 SendKeys.SendWait(inputText);
-                SimulateKeyPress(handle, Keys.Enter, 150);
-                SimulateKeyPress(handle, Keys.Enter, 500);
+                SimulateKeyPress(entry.Key, Keys.Enter, 150);
+                SimulateKeyPress(entry.Key, Keys.Enter, 500);
             }
         }
         private static object lockObject = new object();

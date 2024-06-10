@@ -248,7 +248,7 @@ namespace MultiClicker
                         if (inputForm.ShowDialog() == DialogResult.OK)
                         {
                             string inputText = inputForm.InputText;
-                            WindowManagement.sentTextToHandles(inputText, WindowManagement.windowHandles.Keys.ToList());
+                            WindowManagement.sentTextToHandles(inputText, windowHandles.ToList());
                         }
                     }
                 });
@@ -330,6 +330,21 @@ namespace MultiClicker
             {
                 flowLayoutPanel.Controls.Add(panel);
             }
+            // Create a new dictionary for the window handles
+            Dictionary<IntPtr, WindowInfo> newWindowHandles = new Dictionary<IntPtr, WindowInfo>();
+
+            // Add the window handles to the new dictionary in the order of the panels
+            foreach (ExtendedPanel panel in flowLayoutPanel.Controls)
+            {
+                IntPtr handle = (IntPtr)panel.Tag;
+                if (WindowManagement.windowHandles.ContainsKey(handle))
+                {
+                    newWindowHandles[handle] = WindowManagement.windowHandles[handle];
+                }
+            }
+
+            // Replace the old windowHandles dictionary with the new one
+            WindowManagement.windowHandles = newWindowHandles;
         }
 
         private void ChangeImagePanel_Click(object sender, EventArgs e)

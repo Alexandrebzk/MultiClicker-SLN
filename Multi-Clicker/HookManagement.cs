@@ -99,7 +99,7 @@ namespace MultiClicker
                                     }
                                     commands.ForEach(command =>
                                     {
-                                        WindowManagement.sentTextToHandles(command, new List<IntPtr> { WindowManagement.windowHandles.First().Key });
+                                        WindowManagement.sentTextToHandles(command, new List<KeyValuePair<IntPtr, WindowInfo>> { windowHandles.First() });
                                     });
                                 });
                                 keysPressed.Remove(key);
