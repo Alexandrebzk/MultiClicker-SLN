@@ -191,14 +191,14 @@ namespace MultiClicker
             };
             Dictionary<string, string> keyBinds = new Dictionary<string, string>
             {
-                { "CLICK with Delay", "XButton1" },
-                { "Click without Delay", "XButton2" },
-                { "Double Click", "Middle-Mouse" },
-                { "Next character", "F1" },
-                { "Previous Character", "F2" },
-                { "Havenbag (Dofus --> h)", "F3" },
-                { "INVITE GROUP", "F5" },
-                { "Input chat commands (Dofus Open discussion --> Tab)", "F6" }
+                { "CLICK with Delay", ConfigManagement.config.Keybinds[TRIGGERS.SIMPLE_CLICK].ToString() },
+                { "Click without Delay", ConfigManagement.config.Keybinds[TRIGGERS.SIMPLE_CLICK_NO_DELAY].ToString() },
+                { "Double Click", ConfigManagement.config.Keybinds[TRIGGERS.DOUBLE_CLICK].ToString() },
+                { "Next character", ConfigManagement.config.Keybinds[TRIGGERS.SELECT_NEXT].ToString() },
+                { "Previous Character", ConfigManagement.config.Keybinds[TRIGGERS.SELECT_PREVIOUS].ToString() },
+                { "Havenbag (Dofus --> h)", ConfigManagement.config.Keybinds[TRIGGERS.HAVENBAG].ToString() },
+                { "INVITE GROUP", ConfigManagement.config.Keybinds[TRIGGERS.GROUP_INVITE].ToString() },
+                { "Input chat commands (Dofus Open discussion --> Tab)", ConfigManagement.config.Keybinds[TRIGGERS.TRAVEL].ToString() },
             };
             // Create a new ToolTip instance
             ToolTip toolTip = new ToolTip();
@@ -249,6 +249,19 @@ namespace MultiClicker
                         {
                             string inputText = inputForm.InputText;
                             WindowManagement.sentTextToHandles(inputText, windowHandles.ToList());
+                        }
+                    }
+                });
+            };
+            HookManagement.ShouldOpenKeyBindForm += () =>
+            {
+                this.Invoke((MethodInvoker)delegate
+                {
+                    using (KeyBindForm inputForm = new KeyBindForm())
+                    {
+
+                        if (inputForm.ShowDialog() == DialogResult.OK)
+                        {
                         }
                     }
                 });
