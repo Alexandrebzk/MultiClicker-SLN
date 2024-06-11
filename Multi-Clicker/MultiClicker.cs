@@ -239,7 +239,7 @@ namespace MultiClicker
             ToolStripMenuItem changeImageItem = new ToolStripMenuItem("Change Image");
             changeImageItem.Click += ChangeImagePanel_Click;
             contextMenu.Items.Add(changeImageItem);
-            HookManagement.F6Pressed += () =>
+            HookManagement.ShouldOpenMenuTravel += () =>
             {
                 this.Invoke((MethodInvoker)delegate
                 {

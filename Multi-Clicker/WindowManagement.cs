@@ -242,7 +242,7 @@ namespace MultiClicker
             {
                 PanelManagement.Panel_Select(entry.Value.CharacterName);
                 System.Threading.Thread.Sleep(500);
-                SimulateKeyPress(entry.Key, Keys.Tab, 150);
+                SimulateKeyPress(entry.Key, ConfigManagement.config.Keybinds[TRIGGERS.DOFUS_OPEN_DISCUSSION], 150);
                 SendKeys.SendWait(inputText);
                 SimulateKeyPress(entry.Key, Keys.Enter, 150);
                 SimulateKeyPress(entry.Key, Keys.Enter, 500);
@@ -274,8 +274,7 @@ namespace MultiClicker
                     using (var page = engine.Process(pix))
                     {
                         string recognizedText = page.GetText();
-
-                        // Compare the recognized text with the text from each asset
+                        recognizedText = recognizedText.Replace(" ", ""); // Remove all spaces
                         foreach (var window in windowHandles)
                         {
                             var value = window.Value;
@@ -315,5 +314,6 @@ namespace MultiClicker
             }
             return true;
         }
+
     }
 }

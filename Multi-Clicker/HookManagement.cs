@@ -2,16 +2,25 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using static MultiClicker.MultiClicker;
 using static MultiClicker.WindowManagement;
 
 namespace MultiClicker
 {
     public static class HookManagement
     {
+        public static Dictionary<TRIGGERS, Action<object>> KeyActions = new Dictionary<TRIGGERS, Action<object>>
+        {
+            { TRIGGERS.SELECT_NEXT,obj => PanelManagement.SelectNextPanel() },
+            { TRIGGERS.SELECT_PREVIOUS, obj => PanelManagement.SelectPreviousPanel() },
+            { TRIGGERS.HAVENBAG, obj => HavenbagHandler() },
+            { TRIGGERS.GROUP_INVITE, obj => GroupHandler() },
+            { TRIGGERS.SIMPLE_CLICK, obj => WindowManagement.PerformWindowClick(cursorPos, false) },
+            { TRIGGERS.SIMPLE_CLICK_NO_DELAY, obj => WindowManagement.PerformWindowClick(cursorPos, true) },
+            { TRIGGERS.DOUBLE_CLICK, obj => WindowManagement.PerformWindowDoubleClick(cursorPos) },
+        };
+
 
         public enum MouseMessages
         {
@@ -48,7 +57,9 @@ namespace MultiClicker
         public const int WM_KEYUP = 0x0101;
         public const int WH_MOUSE_LL = 14;
         public const int WH_KEYBOARD_LL = 13;
-        public static event Action F6Pressed;
+        public static event Action ShouldOpenMenuTravel;
+        public static Random Random = new Random();
+        private static POINT cursorPos;
 
         public static IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
@@ -59,61 +70,25 @@ namespace MultiClicker
             Random random = new Random();
             if (nCode >= 0)
             {
+                Keys key = (Keys)Marshal.ReadInt32(lParam);
                 if (wParam == (IntPtr)WM_KEYDOWN)
                 {
-                    keysPressed.Add((Keys)Marshal.ReadInt32(lParam));
-                    foreach (Keys key in keysPressed.ToList())
+                    keysPressed.Add(key);
+                    if (ConfigManagement.config.Keybinds.Values.Contains(key))
                     {
-                        switch (key)
+                        var trigger = ConfigManagement.config.Keybinds.First(kvp => kvp.Value == key).Key;
+                        if (KeyActions.ContainsKey(trigger))
                         {
-                            case Keys.F1:
-                                PanelManagement.SelectNextPanel();
-                                keysPressed.Remove(key);
-                                return (IntPtr)1;
-                            case Keys.F2:
-                                PanelManagement.SelectPreviousPanel();
-                                keysPressed.Remove(key);
-                                return (IntPtr)1;
-                            case Keys.F3:
-                                    Task.Run(() =>
-                                    {
-                                        foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
-                                        {
-                                            int delay = random.Next(200, 400);
-                                            WindowManagement.SimulateKeyPress(entry.Key, Keys.H, delay);
-                                        }
-                                    });
-                                keysPressed.Remove(key);
-                                break;
-                            case Keys.F5:
-                                Task.Run(() =>
-                                {
-                                    List<String> commands = new List<String>();
-                                    foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
-                                    {
-                                        if (entry.Value == WindowManagement.windowHandles.First().Value)
-                                            continue;
-                                        int delay = random.Next(800, 1200);
-                                        string inviteCommand = "/invite " + entry.Value.CharacterName;
-                                        commands.Add(inviteCommand);
-                                    }
-                                    commands.ForEach(command =>
-                                    {
-                                        WindowManagement.sentTextToHandles(command, new List<KeyValuePair<IntPtr, WindowInfo>> { windowHandles.First() });
-                                    });
-                                });
-                                keysPressed.Remove(key);
-                                break;
+                            KeyActions[trigger](null);
+                            keysPressed.Remove(key);
                         }
-
                     }
                 }
                 else if (wParam == (IntPtr)WM_KEYUP)
                 {
-                    Keys key = (Keys)Marshal.ReadInt32(lParam);
-                    if (key == Keys.F6)
+                    if (key == ConfigManagement.config.Keybinds[TRIGGERS.TRAVEL])
                     {
-                        F6Pressed?.Invoke();
+                        ShouldOpenMenuTravel?.Invoke();
                     }
                     keysPressed.Remove(key);
                 }
@@ -129,7 +104,6 @@ namespace MultiClicker
             }
             if (nCode >= 0)
             {
-                POINT cursorPos;
                 GetCursorPos(out cursorPos);
                 IntPtr hWnd = WindowFromPoint(cursorPos);
                 MouseMessages message = (MouseMessages)wParam;
@@ -159,5 +133,36 @@ namespace MultiClicker
             }
             return CallNextHookEx(MultiClicker._mouseHookID, nCode, wParam, lParam);
         }
+
+        public static void HavenbagHandler()
+        {
+            int delay = Random.Next(200, 400);
+            Task.Run(() =>
+            {
+                foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
+                {
+                    WindowManagement.SimulateKeyPress(entry.Key, ConfigManagement.config.Keybinds[TRIGGERS.DOFUS_HAVENBAG], delay);
+                }
+            });
+        }
+        private static void GroupHandler()
+        {
+            Task.Run(() =>
+            {
+                List<String> commands = new List<String>();
+                foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
+                {
+                    if (entry.Value == WindowManagement.windowHandles.First().Value)
+                        continue;
+                    string inviteCommand = "/invite " + entry.Value.CharacterName;
+                    commands.Add(inviteCommand);
+                }
+                commands.ForEach(command =>
+                {
+                    WindowManagement.sentTextToHandles(command, new List<KeyValuePair<IntPtr, WindowInfo>> { windowHandles.First() });
+                });
+            });
+        }
+
     }
 }
