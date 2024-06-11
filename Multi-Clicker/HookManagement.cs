@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
@@ -51,7 +52,9 @@ namespace MultiClicker
         [DllImport("user32.dll")]
         public static extern bool GetCursorPos(out POINT lpPoint);
         [DllImport("user32.dll")]
-        public static extern IntPtr WindowFromPoint(POINT Point);
+        public static extern IntPtr WindowFromPoint(POINT Point); 
+        [DllImport("user32.dll")]
+        static extern short GetKeyState(int nVirtKey);
         public static List<Keys> keysPressed = new List<Keys>();
         public const int WM_KEYDOWN = 0x0100;
         public const int WM_KEYUP = 0x0101;
@@ -59,7 +62,31 @@ namespace MultiClicker
         public const int WH_KEYBOARD_LL = 13;
         public static event Action ShouldOpenMenuTravel;
         public static Random Random = new Random();
-        private static POINT cursorPos;
+        public static POINT cursorPos;
+
+        public static Action ShouldOpenKeyBindForm { get; internal set; }
+
+        private static void checkForModifiers()
+        {
+            bool isAltPressed = (GetKeyState(0x12) & 0x8000) != 0;
+            bool isCtrlPressed = (GetKeyState(0x11) & 0x8000) != 0;
+            if (isAltPressed && !keysPressed.Contains(Keys.Alt))
+            {
+                keysPressed.Add(Keys.Alt);
+            }
+            else
+            {
+                keysPressed.Remove(Keys.Alt);
+            }
+            if (isCtrlPressed && !keysPressed.Contains(Keys.LControlKey))
+            {
+                keysPressed.Add(Keys.LControlKey);
+            }
+            else
+            {
+                keysPressed.Remove(Keys.LControlKey);
+            }
+        }
 
         public static IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
@@ -71,9 +98,11 @@ namespace MultiClicker
             if (nCode >= 0)
             {
                 Keys key = (Keys)Marshal.ReadInt32(lParam);
+                checkForModifiers();
                 if (wParam == (IntPtr)WM_KEYDOWN)
                 {
-                    keysPressed.Add(key);
+                    if(!keysPressed.Contains(key))
+                        keysPressed.Add(key);
                     if (ConfigManagement.config.Keybinds.Values.Contains(key))
                     {
                         var trigger = ConfigManagement.config.Keybinds.First(kvp => kvp.Value == key).Key;
@@ -90,7 +119,11 @@ namespace MultiClicker
                     {
                         ShouldOpenMenuTravel?.Invoke();
                     }
-                    keysPressed.Remove(key);
+                    if (key == ConfigManagement.config.Keybinds[TRIGGERS.OPTIONS])
+                    {
+                        ShouldOpenKeyBindForm?.Invoke();
+                    }
+                    keysPressed.RemoveAll(elt => elt == key);
                 }
             }
             return CallNextHookEx(MultiClicker._keyboardHookID, nCode, wParam, lParam);
@@ -107,11 +140,30 @@ namespace MultiClicker
                 GetCursorPos(out cursorPos);
                 IntPtr hWnd = WindowFromPoint(cursorPos);
                 MouseMessages message = (MouseMessages)wParam;
+                checkForModifiers();
 
                 if (WindowManagement.windowHandles.ContainsKey(hWnd))
                 {
                     switch (message)
                     {
+                        case MouseMessages.WM_RBUTTONUP:
+                            if(ConfigManagement.IS_MODIFYING_KEY_BINDS)
+                                KeyBindForm.choosePosition();
+                            break;
+                        case MouseMessages.WM_LBUTTONDOWN:
+
+                            if (keysPressed.Contains(Keys.Oem7))
+                            {
+                                System.Threading.Thread.Sleep(1000);
+                                WindowManagement.FillSellPriceBasedOnForeGroundWindow();
+                                keysPressed.RemoveAll(elt => elt == Keys.Oem7);
+                            }
+                            else
+                            {
+                                if (ConfigManagement.IS_MODIFYING_KEY_BINDS)
+                                    KeyBindForm.choosePosition();
+                            }
+                            break;
                         case MouseMessages.WM_MBUTTONUP:
                             System.Threading.Thread.Sleep(150);
                             WindowManagement.PerformWindowDoubleClick(cursorPos);

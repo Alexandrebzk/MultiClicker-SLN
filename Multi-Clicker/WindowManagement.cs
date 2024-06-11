@@ -55,6 +55,8 @@ namespace MultiClicker
         public const int SM_CYCAPTION = 4;
         private const int KEYUP = 0x2;
         private const uint Restore = 9;
+        private static string ocrLanguage = "fra";
+        private static string tessdataPath = @"./tessdata";
         public static Dictionary<IntPtr, WindowInfo> windowHandles = new Dictionary<IntPtr, WindowInfo>();
 
         public class WindowInfo
@@ -63,8 +65,6 @@ namespace MultiClicker
             public string CharacterName { get; set; }
             public ExtendedPanel relatedPanel { get; set; }
         }
-
-        public static Rectangle SearchCombatArea;
         public static Dictionary<IntPtr, WindowInfo> FindWindows(string windowTitle)
         {
             Dictionary<IntPtr, WindowInfo> windowHandles = new Dictionary<IntPtr, WindowInfo>();
@@ -97,25 +97,8 @@ namespace MultiClicker
 
                 return true;
             }, IntPtr.Zero);
-            SearchCombatArea = GetSearchAreaQuarter();
 
             return windowHandles;
-        }
-        private static Rectangle GetSearchAreaQuarter()
-        {
-            // Get the screen's size
-            int screenWidth = Screen.PrimaryScreen.Bounds.Width;
-            int screenHeight = Screen.PrimaryScreen.Bounds.Height;
-
-            // Calculate the size of the quarter rectangle
-            int width = screenWidth / 5;
-            int height = screenHeight / 2;
-
-            // Create the quarter rectangle
-            Rectangle quarterRect = new Rectangle(0, 0, width, height);
-
-
-            return quarterRect;
         }
         public static void SimulateClick(IntPtr windowHandle, int x, int y, int delay)
         {
@@ -126,7 +109,7 @@ namespace MultiClicker
 
             // Send the WM_LBUTTONDOWN message
             SendMessage(windowHandle, Constants.WM_LBUTTONDOWN, new IntPtr(1), lParam);
-
+            System.Threading.Thread.Sleep(10);
             // Send the WM_LBUTTONUP message
             SendMessage(windowHandle, Constants.WM_LBUTTONUP, IntPtr.Zero, lParam);
         }
@@ -137,9 +120,11 @@ namespace MultiClicker
             IntPtr lParam = (IntPtr)((y << 16) | x);
 
             SendMessage(windowHandle, Constants.WM_LBUTTONDOWN, new IntPtr(1), lParam);
+            System.Threading.Thread.Sleep(10);
             SendMessage(windowHandle, Constants.WM_LBUTTONUP, IntPtr.Zero, lParam);
             System.Threading.Thread.Sleep(SystemInformation.DoubleClickTime / 2);
             SendMessage(windowHandle, Constants.WM_LBUTTONDOWN, new IntPtr(1), lParam);
+            System.Threading.Thread.Sleep(10);
             SendMessage(windowHandle, Constants.WM_LBUTTONUP, IntPtr.Zero, lParam);
         }
 
@@ -224,9 +209,9 @@ namespace MultiClicker
             else
             {
                 // If the window is not in fullscreen mode, calculate the absolute position
-                absoluteX = cursorPos.X - rect.Left;
+                absoluteX = cursorPos.X - rect.Left - 5;
                 int titleBarHeight = GetSystemMetrics(SM_CYCAPTION); // Get the height of the title bar
-                absoluteY = cursorPos.Y - rect.Top - titleBarHeight; // Subtract the height of the title bar
+                absoluteY = cursorPos.Y - rect.Top - titleBarHeight - 5; // Subtract the height of the title bar
 
             }
             return new POINT
@@ -262,11 +247,83 @@ namespace MultiClicker
             };
             timer.Start();
         }
+
+        public static void FillSellPriceBasedOnForeGroundWindow()
+        {
+
+            Dictionary<Rectangle, int> ValuesMap = new Dictionary<Rectangle, int>{
+                {GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_CURRENT_MODE]), 0},
+                {GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_1]), 0},
+                {GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_10]), 0},
+                {GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_100]), 0},
+            };
+
+            try
+            {
+                using (var engine = new TesseractEngine(tessdataPath, ocrLanguage, EngineMode.Default))
+                {
+                    engine.SetVariable("tessedit_char_whitelist", "0123456789");
+
+                    foreach (var elt in ValuesMap.Keys.ToList())
+                    {
+                        var currentSellingModeBitmap = CaptureArea(elt);
+                        using (var pix = PixConverter.ToPix(currentSellingModeBitmap))
+                        {
+                            using (var page = engine.Process(pix, PageSegMode.SingleLine))
+                            {
+                                string recognizedText = page.GetText().Trim();
+                                Debug.WriteLine($"Recognized text: {recognizedText}");
+                                if (int.TryParse(recognizedText, out int parsedValue))
+                                {
+                                    ValuesMap[elt] = parsedValue;
+                                }
+                                else
+                                {
+                                    Debug.WriteLine($"Failed to parse recognized text: {recognizedText}");
+                                }
+                            }
+                        }
+                        currentSellingModeBitmap.Dispose();
+                    }
+                }
+
+                if (
+                    ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_CURRENT_MODE])] == 0
+                    || ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_1])] == 0
+                    || ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_10])] == 0
+                    || ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_100])] == 0
+                    )
+                {
+                    return;
+                }
+                switch (ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_CURRENT_MODE])])
+                {
+                    case 1:
+                        SendKeys.SendWait((ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_1])] - 1).ToString());
+                        break;
+                    case 10:
+                        SendKeys.SendWait((ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_10])] - 1).ToString());
+                        break;
+                    case 100:
+                        SendKeys.SendWait((ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_100])] - 1).ToString());
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log or handle exceptions from the OCR process
+                Debug.WriteLine($"OCR processing failed: {ex.Message}");
+            }
+        }
+        private static Rectangle GetRectangleFromPosition(Position position)
+        {
+            return new Rectangle(position.X, position.Y, position.Width, position.Height);
+        }
         private static void CheckForegroundWindowForText()
         {
 
-            Bitmap captureBitmap = CaptureCombatArea();
-            using (var engine = new TesseractEngine(@"./tessdata", "fra", EngineMode.Default))
+            Bitmap captureBitmap = CaptureArea(GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.FIGHT_ANALISYS]));
+            using (var engine = new TesseractEngine(tessdataPath, ocrLanguage, EngineMode.Default))
             {
                 // Recognize the text from the captured image
                 using (var pix = PixConverter.ToPix(captureBitmap))
@@ -288,11 +345,10 @@ namespace MultiClicker
                 }
             }
         }
-        private static Bitmap CaptureCombatArea()
+        private static Bitmap CaptureArea(Rectangle rectangle)
         {
-
-            int width = (SearchCombatArea.Right - SearchCombatArea.Left);
-            int height = (SearchCombatArea.Bottom - SearchCombatArea.Top);
+            int width = (rectangle.Right - rectangle.Left);
+            int height = (rectangle.Bottom - rectangle.Top);
 
             // Create a bitmap to hold the captured image
             Bitmap bitmap = new Bitmap(width, height);
@@ -300,7 +356,7 @@ namespace MultiClicker
             // Use Graphics.CopyFromScreen to capture the specified area of the window
             using (Graphics g = Graphics.FromImage(bitmap))
             {
-                g.CopyFromScreen(SearchCombatArea.Left, SearchCombatArea.Top, 0, 0, new Size(width, height));
+                g.CopyFromScreen(rectangle.Left, rectangle.Top, 0, 0, new Size(width, height));
             }
             return bitmap;
         }

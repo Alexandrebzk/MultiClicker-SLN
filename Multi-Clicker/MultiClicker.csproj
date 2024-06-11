@@ -78,6 +78,12 @@
   <ItemGroup>
     <Compile Include="ConfigManagement.cs" />
     <Compile Include="Constants.cs" />
+    <Compile Include="KeyBindForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="KeyBindForm.Designer.cs">
+      <DependentUpon>KeyBindForm.cs</DependentUpon>
+    </Compile>
     <Compile Include="MultiClicker.cs">
       <SubType>Component</SubType>
     </Compile>
@@ -86,6 +92,12 @@
     </Compile>
     <Compile Include="HookManagement.cs" />
     <Compile Include="PanelManagement.cs" />
+    <Compile Include="PositionOverlayForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="PositionOverlayForm.Designer.cs">
+      <DependentUpon>PositionOverlayForm.cs</DependentUpon>
+    </Compile>
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="ReplicateTextForm.cs">
