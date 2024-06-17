@@ -5,6 +5,7 @@ using System.Drawing;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Tesseract;
@@ -49,6 +50,8 @@ namespace MultiClicker
         public static extern IntPtr PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")]
         static extern IntPtr GetForegroundWindow();
+        private static readonly object tessEngineLock = new object();
+        private static TesseractEngine _engine = null;
 
         private const int ALT = 0xA4;
         private const int EXTENDEDKEY = 0x1;
@@ -233,14 +236,14 @@ namespace MultiClicker
                 SimulateKeyPress(entry.Key, Keys.Enter, 500);
             }
         }
-        private static object lockObject = new object();
 
         public static void StartCheckingForegroundWindowForText()
         {
-            System.Timers.Timer timer = new System.Timers.Timer(700);
+            System.Timers.Timer timer = new System.Timers.Timer(500);
             timer.Elapsed += (sender, e) =>
             {
-                lock (lockObject)
+                IntPtr activeWindowHandle = GetForegroundWindow();
+                if (IsRelatedHandle(activeWindowHandle))
                 {
                     CheckForegroundWindowForText();
                 }
@@ -270,20 +273,30 @@ namespace MultiClicker
 
                     foreach (var elt in ValuesMap.Keys.ToList())
                     {
-                        var currentSellingModeBitmap = CaptureArea(elt);
+                        var currentSellingModeBitmap = CaptureWindowArea((IntPtr)PanelManagement.selectedPanel.Tag, elt);
                         using (var pix = PixConverter.ToPix(currentSellingModeBitmap))
                         {
                             using (var page = engine.Process(pix, PageSegMode.SingleLine))
                             {
                                 string recognizedText = page.GetText().Trim();
-                                Trace.WriteLine($"Recognized text: {recognizedText}");
-                                if (int.TryParse(recognizedText, out int parsedValue))
+                                Match match = Regex.Match(recognizedText, @"\d+");
+
+                                if (match.Success)
                                 {
-                                    ValuesMap[elt] = parsedValue;
+                                    string firstSequenceOfDigits = match.Value;
+                                    Trace.WriteLine($"Recognized price: {recognizedText}");
+                                    if (int.TryParse(firstSequenceOfDigits, out int parsedValue))
+                                    {
+                                        ValuesMap[elt] = parsedValue;
+                                    }
+                                    else
+                                    {
+                                        Trace.WriteLine($"Failed to parse first sequence of digits: {firstSequenceOfDigits}");
+                                    }
                                 }
                                 else
                                 {
-                                    Trace.WriteLine($"Failed to parse recognized text: {recognizedText}");
+                                    Trace.WriteLine("No digits found in recognized text.");
                                 }
                             }
                         }
@@ -316,6 +329,7 @@ namespace MultiClicker
                 // Log or handle exceptions from the OCR process
                 Trace.WriteLine($"HDV OCR processing failed: {ex.Message}, Trace : {ex.StackTrace}");
             }
+            Trace.WriteLine("-------------------------");
         }
         private static Rectangle GetRectangleFromPosition(Position position)
         {
@@ -325,49 +339,75 @@ namespace MultiClicker
         {
             try
             {
-                using (var captureBitmap = CaptureArea(GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.FIGHT_ANALISYS])))
-                using (var engine = new TesseractEngine(tessdataPath, ocrLanguage, EngineMode.Default))
-                using (var pix = PixConverter.ToPix(captureBitmap))
-                using (var page = engine.Process(pix))
-                {
-                    engine.SetVariable("tessedit_char_whitelist", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_[]");
+                TesseractEngine engine = GetTesseractEngine();
 
-                    string recognizedText = page.GetText().Replace(" ", "");
-                    if(string.IsNullOrEmpty(recognizedText))
+                using (var captureBitmap = CaptureWindowArea((IntPtr)PanelManagement.selectedPanel.Tag, GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.FIGHT_ANALISYS])))
+                using (var pix = PixConverter.ToPix(captureBitmap))
+                {
+                    string recognizedText;
+                    lock (tessEngineLock)
+                    {
+                        using (var page = engine.Process(pix))
+                        {
+                            recognizedText = page.GetText().Trim();
+                        }
+                    }
+
+                    if (string.IsNullOrEmpty(recognizedText))
                     {
                         return;
                     }
-                    Parallel.ForEach(windowHandles, (window) =>
+                    Trace.WriteLine($"Recognized text: {recognizedText}");
+
+                    foreach (var window in windowHandles)
                     {
                         var value = window.Value;
                         if (recognizedText.Contains(value.CharacterName))
                         {
                             PanelManagement.Panel_Select(value.CharacterName);
                         }
-                    });
+                    }
                 }
             }
             catch (Exception ex)
             {
-                // Log the exception or handle it as needed
                 Trace.WriteLine($"Error processing combat OCR: {ex.Message}");
             }
         }
-
-        private static Bitmap CaptureArea(Rectangle rectangle)
+        private static Bitmap CaptureWindowArea(IntPtr windowHandle, Rectangle screenRectangle)
         {
-            int width = (rectangle.Right - rectangle.Left);
-            int height = (rectangle.Bottom - rectangle.Top);
+            Screen windowScreen = Screen.FromHandle(windowHandle);
 
-            // Create a bitmap to hold the captured image
-            Bitmap bitmap = new Bitmap(width, height);
+            Rectangle adjustedRectangle = new Rectangle(
+                screenRectangle.Left + windowScreen.WorkingArea.Left,
+                screenRectangle.Top + windowScreen.WorkingArea.Top,
+                screenRectangle.Width,
+                screenRectangle.Height);
 
-            // Use Graphics.CopyFromScreen to capture the specified area of the window
-            using (Graphics g = Graphics.FromImage(bitmap))
+            Bitmap capturedBitmap = new Bitmap(adjustedRectangle.Width, adjustedRectangle.Height);
+
+            using (Graphics graphics = Graphics.FromImage(capturedBitmap))
             {
-                g.CopyFromScreen(rectangle.Left, rectangle.Top, 0, 0, new Size(width, height));
+                graphics.CopyFromScreen(adjustedRectangle.Left, adjustedRectangle.Top, 0, 0, new Size(adjustedRectangle.Width, adjustedRectangle.Height));
             }
-            return bitmap;
+
+            return capturedBitmap;
+        }
+
+        private static TesseractEngine GetTesseractEngine()
+        {
+            if (_engine == null)
+            {
+                lock (tessEngineLock)
+                {
+                    if (_engine == null) // Double-check locking
+                    {
+                        _engine = new TesseractEngine(tessdataPath, ocrLanguage, EngineMode.Default);
+                        _engine.SetVariable("tessedit_char_whitelist", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_[]");
+                    }
+                }
+            }
+            return _engine;
         }
 
         public static Boolean IsRelatedHandle(IntPtr activeWindowHandle)
