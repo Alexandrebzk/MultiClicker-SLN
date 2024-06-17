@@ -146,7 +146,7 @@ namespace MultiClicker
             }
             else
             {
-                Debug.WriteLine($"First click: {firstClick.Value}, Second click: {HookManagement.cursorPos}");
+                Trace.WriteLine($"First click: {firstClick.Value}, Second click: {HookManagement.cursorPos}");
                 Position newPosition = new Position
                 {
                     X = Math.Min(firstClick.Value.X, HookManagement.cursorPos.X),

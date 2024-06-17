@@ -199,6 +199,8 @@ namespace MultiClicker
                 { "Havenbag (Dofus --> h)", ConfigManagement.config.Keybinds[TRIGGERS.HAVENBAG].ToString() },
                 { "INVITE GROUP", ConfigManagement.config.Keybinds[TRIGGERS.GROUP_INVITE].ToString() },
                 { "Input chat commands (Dofus Open discussion --> Tab)", ConfigManagement.config.Keybinds[TRIGGERS.TRAVEL].ToString() },
+                { "Auto complete HDV (see position config) -->", "² + MRbutton" },
+                { "Positions' config -->", ConfigManagement.config.Keybinds[TRIGGERS.OPTIONS].ToString() },
             };
             // Create a new ToolTip instance
             ToolTip toolTip = new ToolTip();
@@ -358,6 +360,7 @@ namespace MultiClicker
 
             // Replace the old windowHandles dictionary with the new one
             WindowManagement.windowHandles = newWindowHandles;
+            PanelManagement.Panel_Click(flowLayoutPanel.Controls[0], EventArgs.Empty);
         }
 
         private void ChangeImagePanel_Click(object sender, EventArgs e)

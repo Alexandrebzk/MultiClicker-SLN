@@ -146,22 +146,16 @@ namespace MultiClicker
                 {
                     switch (message)
                     {
-                        case MouseMessages.WM_RBUTTONUP:
+                        case MouseMessages.WM_RBUTTONDOWN:
                             if(ConfigManagement.IS_MODIFYING_KEY_BINDS)
                                 KeyBindForm.choosePosition();
                             break;
                         case MouseMessages.WM_LBUTTONDOWN:
-
                             if (keysPressed.Contains(Keys.Oem7))
                             {
                                 System.Threading.Thread.Sleep(1000);
                                 WindowManagement.FillSellPriceBasedOnForeGroundWindow();
                                 keysPressed.RemoveAll(elt => elt == Keys.Oem7);
-                            }
-                            else
-                            {
-                                if (ConfigManagement.IS_MODIFYING_KEY_BINDS)
-                                    KeyBindForm.choosePosition();
                             }
                             break;
                         case MouseMessages.WM_MBUTTONUP:
