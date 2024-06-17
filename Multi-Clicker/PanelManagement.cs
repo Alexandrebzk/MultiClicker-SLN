@@ -72,7 +72,6 @@ namespace MultiClicker
             ExtendedPanel panel = (ExtendedPanel)sender;
             IntPtr handle = (IntPtr)panel.Tag;
 
-            if (handle == GetForegroundWindow()) return;
             // If a panel was previously selected, remove its border
             if (selectedPanel != null)
             {
@@ -81,6 +80,7 @@ namespace MultiClicker
 
             panel.BackColor = ColorTranslator.FromHtml("#ddfe00");
             selectedPanel = panel;
+            if (handle == GetForegroundWindow()) return;
             WindowManagement.SetHandleToForeGround(handle);
         }
 

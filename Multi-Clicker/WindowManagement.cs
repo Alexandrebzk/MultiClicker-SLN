@@ -56,7 +56,7 @@ namespace MultiClicker
         private const int KEYUP = 0x2;
         private const uint Restore = 9;
         private static string ocrLanguage = "fra";
-        private static string tessdataPath = @"./tessdata";
+        private static string tessdataPath = @"tessdata";
         public static Dictionary<IntPtr, WindowInfo> windowHandles = new Dictionary<IntPtr, WindowInfo>();
 
         public class WindowInfo
@@ -250,12 +250,16 @@ namespace MultiClicker
 
         public static void FillSellPriceBasedOnForeGroundWindow()
         {
+            var sellCurrentModeValue = GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_CURRENT_MODE]);
+            var sellLot1Value = GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_1]);
+            var sellLot10Value = GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_10]);
+            var sellLot100Value = GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_100]);
 
             Dictionary<Rectangle, int> ValuesMap = new Dictionary<Rectangle, int>{
-                {GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_CURRENT_MODE]), 0},
-                {GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_1]), 0},
-                {GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_10]), 0},
-                {GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_100]), 0},
+                {sellCurrentModeValue, 0},
+                {sellLot1Value, 0},
+                {sellLot10Value, 0},
+                {sellLot100Value, 0},
             };
 
             try
@@ -272,47 +276,45 @@ namespace MultiClicker
                             using (var page = engine.Process(pix, PageSegMode.SingleLine))
                             {
                                 string recognizedText = page.GetText().Trim();
-                                Debug.WriteLine($"Recognized text: {recognizedText}");
+                                Trace.WriteLine($"Recognized text: {recognizedText}");
                                 if (int.TryParse(recognizedText, out int parsedValue))
                                 {
                                     ValuesMap[elt] = parsedValue;
                                 }
                                 else
                                 {
-                                    Debug.WriteLine($"Failed to parse recognized text: {recognizedText}");
+                                    Trace.WriteLine($"Failed to parse recognized text: {recognizedText}");
                                 }
                             }
                         }
                         currentSellingModeBitmap.Dispose();
                     }
                 }
-
-                if (
-                    ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_CURRENT_MODE])] == 0
-                    || ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_1])] == 0
-                    || ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_10])] == 0
-                    || ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_100])] == 0
-                    )
+                if (!(ValuesMap[sellCurrentModeValue] == 1 && ValuesMap[sellLot1Value] != 0) &&
+    (ValuesMap[sellCurrentModeValue] == 0 || ValuesMap[sellLot1Value] == 0 || ValuesMap[sellLot10Value] == 0 || ValuesMap[sellLot100Value] == 0))
                 {
                     return;
                 }
-                switch (ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_CURRENT_MODE])])
+                var AmountToFill = 0;
+                switch (ValuesMap[sellCurrentModeValue])
                 {
                     case 1:
-                        SendKeys.SendWait((ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_1])] - 1).ToString());
+                        AmountToFill = ValuesMap[sellLot1Value];
                         break;
                     case 10:
-                        SendKeys.SendWait((ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_10])] - 1).ToString());
+                        AmountToFill = ValuesMap[sellLot10Value];
                         break;
                     case 100:
-                        SendKeys.SendWait((ValuesMap[GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_100])] - 1).ToString());
+                        AmountToFill = ValuesMap[sellLot100Value];
                         break;
                 }
+                Trace.WriteLine($"Amount to fill: {AmountToFill}");
+                SendKeys.SendWait((AmountToFill - 1).ToString());
             }
             catch (Exception ex)
             {
                 // Log or handle exceptions from the OCR process
-                Debug.WriteLine($"OCR processing failed: {ex.Message}");
+                Trace.WriteLine($"HDV OCR processing failed: {ex.Message}, Trace : {ex.StackTrace}");
             }
         }
         private static Rectangle GetRectangleFromPosition(Position position)
@@ -321,30 +323,37 @@ namespace MultiClicker
         }
         private static void CheckForegroundWindowForText()
         {
-
-            Bitmap captureBitmap = CaptureArea(GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.FIGHT_ANALISYS]));
-            using (var engine = new TesseractEngine(tessdataPath, ocrLanguage, EngineMode.Default))
+            try
             {
-                // Recognize the text from the captured image
+                using (var captureBitmap = CaptureArea(GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.FIGHT_ANALISYS])))
+                using (var engine = new TesseractEngine(tessdataPath, ocrLanguage, EngineMode.Default))
                 using (var pix = PixConverter.ToPix(captureBitmap))
+                using (var page = engine.Process(pix))
                 {
-                    using (var page = engine.Process(pix))
+                    engine.SetVariable("tessedit_char_whitelist", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_[]");
+
+                    string recognizedText = page.GetText().Replace(" ", "");
+                    if(string.IsNullOrEmpty(recognizedText))
                     {
-                        string recognizedText = page.GetText();
-                        recognizedText = recognizedText.Replace(" ", ""); // Remove all spaces
-                        foreach (var window in windowHandles)
-                        {
-                            var value = window.Value;
-                            if (recognizedText.Contains(value.CharacterName))
-                            {
-                                PanelManagement.Panel_Select(value.CharacterName);
-                            };
-                        }
+                        return;
                     }
-                    captureBitmap.Dispose();
+                    Parallel.ForEach(windowHandles, (window) =>
+                    {
+                        var value = window.Value;
+                        if (recognizedText.Contains(value.CharacterName))
+                        {
+                            PanelManagement.Panel_Select(value.CharacterName);
+                        }
+                    });
                 }
             }
+            catch (Exception ex)
+            {
+                // Log the exception or handle it as needed
+                Trace.WriteLine($"Error processing combat OCR: {ex.Message}");
+            }
         }
+
         private static Bitmap CaptureArea(Rectangle rectangle)
         {
             int width = (rectangle.Right - rectangle.Left);
