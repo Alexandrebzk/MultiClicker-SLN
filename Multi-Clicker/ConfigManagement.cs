@@ -1,4 +1,5 @@
-﻿using Newtonsoft.Json;
+﻿using Microsoft.Win32.SafeHandles;
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -10,6 +11,12 @@ namespace MultiClicker
     public class PanelConfig
     {
         public string Background { get; set; }
+    }
+    public class GeneralConfig
+    {
+        public int MinimumFollowDelay { get; set; }
+        public int FollowNoDelay { get; set; }
+        public int MaximumFollowDelay { get; set; }
     }
     public class Position
     {
@@ -44,6 +51,7 @@ namespace MultiClicker
 
     public class Config
     {
+        public GeneralConfig General { get; set; }
         public Dictionary<string, PanelConfig> Panels { get; set; }
         public Dictionary<TRIGGERS_POSITIONS, Position> Positions { get; set; }
         public Dictionary<TRIGGERS, Keys> Keybinds { get; set; }
@@ -109,11 +117,26 @@ namespace MultiClicker
                         config.Positions.Add(TRIGGERS_POSITIONS.SELL_LOT_100, new Position { X = 0, Y = 0, Width = 0, Height = 0 });
                     }
                 }
+                if (config.General == null)
+                {
+                    config.General = new GeneralConfig
+                    {
+                        MinimumFollowDelay = 200,
+                        MaximumFollowDelay = 400,
+                        FollowNoDelay = 20
+                    };
+                }
             }
             else
             {
                 config = new Config
                 {
+                    General = new GeneralConfig
+                    {
+                        MinimumFollowDelay = 200, 
+                        MaximumFollowDelay = 400,
+                        FollowNoDelay = 20
+                    },
                     Panels = new Dictionary<string, PanelConfig>(),
                     Positions = new Dictionary<TRIGGERS_POSITIONS, Position>{
                         { TRIGGERS_POSITIONS.FIGHT_ANALISYS, new Position{ X = 0, Y = 0, Width = Screen.PrimaryScreen.Bounds.Width / 5, Height = Screen.PrimaryScreen.Bounds.Height / 2} }

@@ -54,7 +54,6 @@ namespace MultiClicker
         public static void SetPanelBackground(ExtendedPanel panel, string imagePath)
         {
 
-            // If the panel was found and the image file exists, set the background image
             if (panel != null && File.Exists(imagePath))
             {
                 panel.BackgroundImage = Image.FromFile(imagePath);
@@ -72,7 +71,6 @@ namespace MultiClicker
             ExtendedPanel panel = (ExtendedPanel)sender;
             IntPtr handle = (IntPtr)panel.Tag;
 
-            // If a panel was previously selected, remove its border
             if (selectedPanel != null)
             {
                 selectedPanel.BackColor = Color.Transparent;
@@ -91,7 +89,6 @@ namespace MultiClicker
             IntPtr handle = (IntPtr)panel.Tag;
 
             if (handle == GetForegroundWindow()) return;
-            // If a panel was previously selected, remove its border
             if (selectedPanel != null)
             {
                 selectedPanel.BackColor = Color.Transparent;

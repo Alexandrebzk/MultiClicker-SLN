@@ -202,24 +202,25 @@ namespace MultiClicker
                 { "Auto complete HDV (see position config) -->", "² + MRbutton" },
                 { "Positions' config -->", ConfigManagement.config.Keybinds[TRIGGERS.OPTIONS].ToString() },
             };
-            // Create a new ToolTip instance
+
             ToolTip toolTip = new ToolTip();
             toolTip.InitialDelay = 10;
             toolTip.ReshowDelay = 500;
             toolTip.ShowAlways = true;
-            // Create a string that looks like a table
+
             StringBuilder toolTipText = new StringBuilder();
             toolTipText.AppendLine("FUNCTION ----> Bind\n");
             foreach (var keyBind in keyBinds)
             {
                 toolTipText.AppendLine($"{keyBind.Key}----->{keyBind.Value}");
             }
+            toolTipText.AppendLine($"Ctrl + Alt + V -----> paste on all windows");
             toolTip.SetToolTip(helpButton, toolTipText.ToString());
 
-            // Handle the Click event to close the form
+
             closeButton.Click += (s, ev) => this.Close();
 
-            // Add the close button to the title bar
+
             titleBar.Controls.Add(closeButton);
             titleBar.Controls.Add(helpButton);
             generateUI();
@@ -275,12 +276,12 @@ namespace MultiClicker
                 ExtendedPanel panel = new ExtendedPanel
                 {
                     ContextMenuStrip = contextMenu,
-                    Size = new Size(75, 75), // Adjust the size as needed
+                    Size = new Size(75, 75),
                     Margin = new Padding(0),
-                    BackgroundImage = Image.FromFile(@"cosmetics\default.png"), // Set the background image
+                    BackgroundImage = Image.FromFile(@"cosmetics\default.png"),
                     BackgroundImagePath = @"cosmetics\default.png",
-                    BackgroundImageLayout = ImageLayout.Center, // Stretch the image to fill the panel
-                    Tag = entry.Key, // Store the window handle in the Tag property,
+                    BackgroundImageLayout = ImageLayout.Center,
+                    Tag = entry.Key,
                     Name = entry.Value.CharacterName
                 };
 
@@ -292,7 +293,7 @@ namespace MultiClicker
                     ForeColor = Color.White,
                     TextAlign = ContentAlignment.MiddleCenter,
                     Font = new Font("Arial", 8.25F, FontStyle.Bold),
-                    BackColor = Color.Transparent // Make the label background transparent
+                    BackColor = Color.Transparent
                 };
 
                 panel.Controls.Add(label);
@@ -302,7 +303,7 @@ namespace MultiClicker
                 totalHeight += panel.Bottom;
                 flowLayoutPanel.Controls.Add(panel);
 
-                // Add the panel to the config if it's not already there
+
                 if (!ConfigManagement.config.Panels.ContainsKey(panel.Name))
                 {
                     ConfigManagement.config.Panels[panel.Name] = new PanelConfig { Background = @"cosmetics\default.png" };
@@ -314,19 +315,19 @@ namespace MultiClicker
             this.Location = new Point(Screen.PrimaryScreen.WorkingArea.Width - totalWidth - (Screen.PrimaryScreen.WorkingArea.Width/20), 0 + totalHeight + (Screen.PrimaryScreen.WorkingArea.Height / 10));
             PanelManagement.Panel_Click(flowLayoutPanel.Controls[0], EventArgs.Empty);
 
-            // Serialize the updated configuration to a JSON string
+
             string updatedConfigJson = JsonConvert.SerializeObject(ConfigManagement.config, Formatting.Indented);
 
-            // Write the updated configuration back to the config.json file
+
             File.WriteAllText("config.json", updatedConfigJson);
         }
 
         private void RearrangePanels()
         {
-            // Create a temporary list of panels
+
             List<ExtendedPanel> panels = new List<ExtendedPanel>();
 
-            // Find the panels and add them to the list
+
             foreach (var panel in ConfigManagement.config.Panels)
             {
                 ExtendedPanel extendedPanel = flowLayoutPanel.Controls.Find(panel.Key, true).FirstOrDefault() as ExtendedPanel;
@@ -337,18 +338,18 @@ namespace MultiClicker
                 }
             }
 
-            // Clear the existing controls
+
             flowLayoutPanel.Controls.Clear();
 
-            // Add the panels back in the order specified in the configuration
+
             foreach (var panel in panels)
             {
                 flowLayoutPanel.Controls.Add(panel);
             }
-            // Create a new dictionary for the window handles
+
             Dictionary<IntPtr, WindowInfo> newWindowHandles = new Dictionary<IntPtr, WindowInfo>();
 
-            // Add the window handles to the new dictionary in the order of the panels
+
             foreach (ExtendedPanel panel in flowLayoutPanel.Controls)
             {
                 IntPtr handle = (IntPtr)panel.Tag;
@@ -358,7 +359,7 @@ namespace MultiClicker
                 }
             }
 
-            // Replace the old windowHandles dictionary with the new one
+
             WindowManagement.windowHandles = newWindowHandles;
             PanelManagement.Panel_Click(flowLayoutPanel.Controls[0], EventArgs.Empty);
         }
@@ -379,12 +380,12 @@ namespace MultiClicker
             int index = flowLayoutPanel.Controls.IndexOf(panel);
             if (index > 0)
             {
-                // Swap the selected panel and the one before it
+
                 ExtendedPanel previousPanel = (ExtendedPanel)flowLayoutPanel.Controls[index - 1];
                 flowLayoutPanel.Controls.SetChildIndex(panel, index - 1);
                 flowLayoutPanel.Controls.SetChildIndex(previousPanel, index);
 
-                // Update the config object and save it to the config.json file
+
                 ConfigManagement.config.Panels.Clear();
                 foreach (ExtendedPanel p in flowLayoutPanel.Controls.Cast<ExtendedPanel>())
                 {
@@ -400,12 +401,12 @@ namespace MultiClicker
             int index = flowLayoutPanel.Controls.IndexOf(panel);
             if (index < flowLayoutPanel.Controls.Count - 1)
             {
-                // Swap the selected panel and the one after it
+
                 ExtendedPanel nextPanel = (ExtendedPanel)flowLayoutPanel.Controls[index + 1];
                 flowLayoutPanel.Controls.SetChildIndex(panel, index + 1);
                 flowLayoutPanel.Controls.SetChildIndex(nextPanel, index);
 
-                // Update the config object and save it to the config.json file
+
                 ConfigManagement.config.Panels.Clear();
                 foreach (ExtendedPanel p in flowLayoutPanel.Controls.Cast<ExtendedPanel>())
                 {

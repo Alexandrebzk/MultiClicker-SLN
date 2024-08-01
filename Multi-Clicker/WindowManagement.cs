@@ -61,6 +61,58 @@ namespace MultiClicker
         private static string ocrLanguage = "fra";
         private static string tessdataPath = @"tessdata";
         public static Dictionary<IntPtr, WindowInfo> windowHandles = new Dictionary<IntPtr, WindowInfo>();
+        [StructLayout(LayoutKind.Sequential)]
+        private struct INPUT
+        {
+            public uint type;
+            public InputUnion u;
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        private struct InputUnion
+        {
+            [FieldOffset(0)]
+            public MOUSEINPUT mi;
+            [FieldOffset(0)]
+            public KEYBDINPUT ki;
+            [FieldOffset(0)]
+            public HARDWAREINPUT hi;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MOUSEINPUT
+        {
+            public int dx;
+            public int dy;
+            public uint mouseData;
+            public uint dwFlags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct KEYBDINPUT
+        {
+            public ushort wVk;
+            public ushort wScan;
+            public uint dwFlags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct HARDWAREINPUT
+        {
+            public uint uMsg;
+            public ushort wParamL;
+            public ushort wParamH;
+        }
+
+        private const uint INPUT_KEYBOARD = 1;
+        private const uint KEYEVENTF_KEYUP = 0x0002;
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint SendInput(uint nInputs, [MarshalAs(UnmanagedType.LPArray), In] INPUT[] pInputs, int cbSize);
 
         public class WindowInfo
         {
@@ -95,7 +147,6 @@ namespace MultiClicker
                 }
                 catch (System.ComponentModel.Win32Exception)
                 {
-                    // Ignore processes where access to the MainModule is denied
                 }
 
                 return true;
@@ -105,21 +156,16 @@ namespace MultiClicker
         }
         public static void SimulateClick(IntPtr windowHandle, int x, int y, int delay)
         {
-            // Wait for a random amount of time between 1 and 1000 milliseconds
             System.Threading.Thread.Sleep(delay);
-            // Calculate the lParam (the coordinates of the cursor within the window)
             IntPtr lParam = (IntPtr)((y << 16) | x);
 
-            // Send the WM_LBUTTONDOWN message
             SendMessage(windowHandle, Constants.WM_LBUTTONDOWN, new IntPtr(1), lParam);
             System.Threading.Thread.Sleep(10);
-            // Send the WM_LBUTTONUP message
             SendMessage(windowHandle, Constants.WM_LBUTTONUP, IntPtr.Zero, lParam);
         }
 
         public static void SimulateDoubleClick(IntPtr windowHandle, int x, int y)
         {
-            // Calculate the lParam (the coordinates of the cursor within the window)
             IntPtr lParam = (IntPtr)((y << 16) | x);
 
             SendMessage(windowHandle, Constants.WM_LBUTTONDOWN, new IntPtr(1), lParam);
@@ -133,31 +179,60 @@ namespace MultiClicker
 
         public static void SimulateKeyPress(IntPtr windowHandle, Keys key, int delay)
         {
-
-            // Wait for a specified amount of time
             System.Threading.Thread.Sleep(delay);
-            if (HookManagement.keysPressed.Contains(Keys.LShiftKey))
-            {
-                PostMessage(windowHandle, HookManagement.WM_KEYUP, (IntPtr)Keys.LShiftKey, IntPtr.Zero);
-            }
-            // Send the WM_KEYDOWN message
+            ReleasePressedKeys();
             PostMessage(windowHandle, HookManagement.WM_KEYDOWN, (IntPtr)key, IntPtr.Zero);
-
-
-            // Send the WM_KEYUP message
             PostMessage(windowHandle, HookManagement.WM_KEYUP, (IntPtr)key, IntPtr.Zero);
+        }
+
+        public static void SimulateKeyPressListToCurrentWindow(List<Keys> keys, int delay)
+        {
+            ReleasePressedKeys();
+            List<INPUT> inputs = new List<INPUT>();
+            foreach (var key in keys)
+            {
+                inputs.Add(new INPUT
+                {
+                    type = INPUT_KEYBOARD,
+                    u = new InputUnion
+                    {
+                        ki = new KEYBDINPUT
+                        {
+                            wVk = (ushort)key,
+                            dwFlags = 0
+                        }
+                    }
+                });
+            }
+            foreach (var key in keys.AsEnumerable().Reverse())
+            {
+                inputs.Add(new INPUT
+                {
+                    type = INPUT_KEYBOARD,
+                    u = new InputUnion
+                    {
+                        ki = new KEYBDINPUT
+                        {
+                            wVk = (ushort)key,
+                            dwFlags = KEYEVENTF_KEYUP
+                        }
+                    }
+                });
+            }
+            System.Threading.Thread.Sleep(50);
+            SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf(typeof(INPUT)));
+            System.Threading.Thread.Sleep(50);
         }
 
         public static void SetHandleToForeGround(IntPtr handle)
         {
 
-            //check if window is minimized
+            // check if window is minimized
             if (IsIconic(handle))
             {
                 ShowWindow(handle, Restore);
             }
 
-            // Simulate a key press & release to trick Windows into allowing the SetForegroundWindow call
             keybd_event((byte)ALT, 0x45, EXTENDEDKEY | 0, 0);
             keybd_event((byte)ALT, 0x45, EXTENDEDKEY | KEYUP, 0);
 
@@ -169,12 +244,17 @@ namespace MultiClicker
             Task.Run(() =>
             {
                 Random random = new Random();
+                bool isFirstEntry = true;
                 foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
                 {
-                    int delay = noDelay ? 20 : random.Next(200, 400);
+                    int delay = noDelay ? ConfigManagement.config.General.FollowNoDelay : random.Next(ConfigManagement.config.General.MinimumFollowDelay, ConfigManagement.config.General.MaximumFollowDelay);
                     RECT rect = new RECT();
                     GetWindowRect(entry.Key, ref rect);
 
+                    if(isFirstEntry){
+                        delay = ConfigManagement.config.General.FollowNoDelay;
+                        isFirstEntry = false;
+                    }
                     POINT finalPositions = AdjustClickPosition(rect, cursorPos);
                     SimulateClick(entry.Key, finalPositions.X, finalPositions.Y, delay);
                 }
@@ -198,23 +278,20 @@ namespace MultiClicker
         }
         private static POINT AdjustClickPosition(RECT rect, POINT cursorPos)
         {
-            // Check if the window is in fullscreen mode
             bool isFullscreen = rect.Right - rect.Left == Screen.PrimaryScreen.Bounds.Width &&
                                 rect.Bottom - rect.Top == Screen.PrimaryScreen.Bounds.Height;
 
             int absoluteX, absoluteY;
             if (isFullscreen)
             {
-                // If the window is in fullscreen mode, the cursor position is the same as the relative position
                 absoluteX = cursorPos.X;
                 absoluteY = cursorPos.Y;
             }
             else
             {
-                // If the window is not in fullscreen mode, calculate the absolute position
                 absoluteX = cursorPos.X - rect.Left - 5;
-                int titleBarHeight = GetSystemMetrics(SM_CYCAPTION); // Get the height of the title bar
-                absoluteY = cursorPos.Y - rect.Top - titleBarHeight - 5; // Subtract the height of the title bar
+                int titleBarHeight = GetSystemMetrics(SM_CYCAPTION);
+                absoluteY = cursorPos.Y - rect.Top - titleBarHeight - 5;
 
             }
             return new POINT
@@ -326,7 +403,6 @@ namespace MultiClicker
             }
             catch (Exception ex)
             {
-                // Log or handle exceptions from the OCR process
                 Trace.WriteLine($"HDV OCR processing failed: {ex.Message}, Trace : {ex.StackTrace}");
             }
             Trace.WriteLine("-------------------------");
@@ -400,7 +476,7 @@ namespace MultiClicker
             {
                 lock (tessEngineLock)
                 {
-                    if (_engine == null) // Double-check locking
+                    if (_engine == null)
                     {
                         _engine = new TesseractEngine(tessdataPath, ocrLanguage, EngineMode.Default);
                         _engine.SetVariable("tessedit_char_whitelist", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_[]");
@@ -418,6 +494,40 @@ namespace MultiClicker
                 return false;
             }
             return true;
+        }
+        private static void ReleasePressedKeys()
+        {
+            List<Keys> commonKeys = new List<Keys>
+            {
+                Keys.LShiftKey, Keys.RShiftKey, Keys.LControlKey, Keys.RControlKey,
+                Keys.LMenu, Keys.RMenu, Keys.Alt, Keys.Shift, Keys.Control
+            };
+
+            List<INPUT> inputs = new List<INPUT>();
+
+            foreach (var key in commonKeys)
+            {
+                if (HookManagement.keysPressed.Contains(key))
+                {
+                    inputs.Add(new INPUT
+                    {
+                        type = INPUT_KEYBOARD,
+                        u = new InputUnion
+                        {
+                            ki = new KEYBDINPUT
+                            {
+                                wVk = (ushort)key,
+                                dwFlags = KEYEVENTF_KEYUP
+                            }
+                        }
+                    });
+                }
+            }
+
+            if (inputs.Count > 0)
+            {
+                SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf(typeof(INPUT)));
+            }
         }
 
     }

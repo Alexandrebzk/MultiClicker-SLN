@@ -112,6 +112,10 @@ namespace MultiClicker
                             keysPressed.Remove(key);
                         }
                     }
+                    if (key == Keys.V && keysPressed.Contains(Keys.Alt) && keysPressed.Contains(Keys.LControlKey))
+                    {
+                        PasteOnAllWindowsHandler();
+                    }
                 }
                 else if (wParam == (IntPtr)WM_KEYUP)
                 {
@@ -182,12 +186,24 @@ namespace MultiClicker
 
         public static void HavenbagHandler()
         {
-            int delay = Random.Next(200, 400);
+            int delay = Random.Next(ConfigManagement.config.General.MinimumFollowDelay, ConfigManagement.config.General.MaximumFollowDelay);
             Task.Run(() =>
             {
                 foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
                 {
                     WindowManagement.SimulateKeyPress(entry.Key, ConfigManagement.config.Keybinds[TRIGGERS.DOFUS_HAVENBAG], delay);
+                }
+            });
+        }
+        public static void PasteOnAllWindowsHandler()
+        {
+            int delay = ConfigManagement.config.General.FollowNoDelay;
+            Task.Run(() =>
+            {
+                foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
+                {
+                    WindowManagement.SimulateKeyPressListToCurrentWindow(new List<Keys> { Keys.LControlKey, Keys.V }, delay);
+                    PanelManagement.SelectNextPanel();
                 }
             });
         }
