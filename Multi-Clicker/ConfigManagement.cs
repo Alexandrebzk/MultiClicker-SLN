@@ -14,6 +14,7 @@ namespace MultiClicker
     }
     public class GeneralConfig
     {
+        public string GameVersion { get; set; }
         public int MinimumFollowDelay { get; set; }
         public int FollowNoDelay { get; set; }
         public int MaximumFollowDelay { get; set; }
@@ -42,7 +43,6 @@ namespace MultiClicker
     }
     public enum TRIGGERS_POSITIONS
     {
-        FIGHT_ANALISYS,
         SELL_CURRENT_MODE,
         SELL_LOT_1,
         SELL_LOT_10,
@@ -81,14 +81,12 @@ namespace MultiClicker
                         { TRIGGERS.DOFUS_HAVENBAG, Keys.H},
                         { TRIGGERS.DOFUS_OPEN_DISCUSSION, Keys.Tab},
                         { TRIGGERS.TRAVEL, Keys.F6},
-                        { TRIGGERS.OPTIONS, Keys.F12},
-                        { TRIGGERS.OPTIONS, Keys.F4}
+                        { TRIGGERS.OPTIONS, Keys.F12}
                     };
                 }
                 if (config.Positions == null)
                 {
                     config.Positions = new Dictionary<TRIGGERS_POSITIONS, Position>{
-                        { TRIGGERS_POSITIONS.FIGHT_ANALISYS, new Position{ X = 0, Y = 0, Width = Screen.PrimaryScreen.Bounds.Width / 5, Height = Screen.PrimaryScreen.Bounds.Height / 2} },
                         { TRIGGERS_POSITIONS.SELL_CURRENT_MODE, new Position{ X = 0, Y = 0, Width = 0, Height = 0} },
                         { TRIGGERS_POSITIONS.SELL_LOT_1, new Position{ X = 0, Y = 0, Width = 0, Height = 0} },
                         { TRIGGERS_POSITIONS.SELL_LOT_10, new Position{ X = 0, Y = 0, Width = 0, Height = 0} },
@@ -96,10 +94,6 @@ namespace MultiClicker
                     };
                 }else
                 {
-                    if (!config.Positions.ContainsKey(TRIGGERS_POSITIONS.FIGHT_ANALISYS))
-                    {
-                        config.Positions.Add(TRIGGERS_POSITIONS.FIGHT_ANALISYS, new Position { X = 0, Y = 0, Width = Screen.PrimaryScreen.Bounds.Width / 5, Height = Screen.PrimaryScreen.Bounds.Height / 2 });
-                    }
                     if (!config.Positions.ContainsKey(TRIGGERS_POSITIONS.SELL_CURRENT_MODE))
                     {
                         config.Positions.Add(TRIGGERS_POSITIONS.SELL_CURRENT_MODE, new Position { X = 0, Y = 0, Width = 0, Height = 0 });
@@ -121,6 +115,7 @@ namespace MultiClicker
                 {
                     config.General = new GeneralConfig
                     {
+                        GameVersion = "3.0.45.37",
                         MinimumFollowDelay = 200,
                         MaximumFollowDelay = 400,
                         FollowNoDelay = 20
@@ -133,13 +128,13 @@ namespace MultiClicker
                 {
                     General = new GeneralConfig
                     {
+                        GameVersion = "1.0",
                         MinimumFollowDelay = 200, 
                         MaximumFollowDelay = 400,
                         FollowNoDelay = 20
                     },
                     Panels = new Dictionary<string, PanelConfig>(),
                     Positions = new Dictionary<TRIGGERS_POSITIONS, Position>{
-                        { TRIGGERS_POSITIONS.FIGHT_ANALISYS, new Position{ X = 0, Y = 0, Width = Screen.PrimaryScreen.Bounds.Width / 5, Height = Screen.PrimaryScreen.Bounds.Height / 2} }
                     },
                     Keybinds = new Dictionary<TRIGGERS, Keys>{
                         { TRIGGERS.SELECT_NEXT, Keys.F1},

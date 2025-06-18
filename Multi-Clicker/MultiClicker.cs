@@ -78,9 +78,17 @@ namespace MultiClicker
         private bool isDragging = false;
         private Point dragStartPoint;
 
+        private void MultiClicker_Resize(object sender, EventArgs e)
+        {
+            flowLayoutPanel.Width = this.ClientSize.Width;
+            flowLayoutPanel.Height = this.ClientSize.Height - titleBar.Height;
+        }
         public MultiClicker()
         {
             InitializeComponent();
+            this.BackColor = Color.FromArgb(28, 29, 30);
+            this.DoubleBuffered = true;
+            this.Resize += MultiClicker_Resize;
         }
 
         protected override void OnLoad(EventArgs e)
@@ -139,6 +147,7 @@ namespace MultiClicker
             }
         }
 
+
         public static FlowLayoutPanel flowLayoutPanel = new FlowLayoutPanel
         {
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
@@ -147,14 +156,15 @@ namespace MultiClicker
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.TopDown,
             AutoScroll = false,
-            WrapContents = false
+            WrapContents = false,
+            BackColor = Color.FromArgb(36, 37, 38)
         };
 
         private void Form1_Load(object sender, EventArgs e)
         {
-            WindowManagement.windowHandles = WindowManagement.FindWindows("- Dofus");
+            WindowManagement.windowHandles = WindowManagement.FindWindows("- " + ConfigManagement.config.General.GameVersion + " -");
             this.MaximizeBox = false;
-            this.ShowIcon = false;
+            this.ShowIcon = false; 
             this.FormBorderStyle = FormBorderStyle.None;
             this.TopMost = true;
             base.OnLostFocus(e);
@@ -224,7 +234,6 @@ namespace MultiClicker
             titleBar.Controls.Add(closeButton);
             titleBar.Controls.Add(helpButton);
             generateUI();
-            StartCheckingForegroundWindowForText();
         }
 
         public void generateUI()
@@ -269,40 +278,39 @@ namespace MultiClicker
                     }
                 });
             };
-
             foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
             {
-
                 ExtendedPanel panel = new ExtendedPanel
                 {
                     ContextMenuStrip = contextMenu,
-                    Size = new Size(75, 75),
-                    Margin = new Padding(0),
+                    Size = new Size(70, 70),
+                    Margin = new Padding(5, 5, 5, 5),
                     BackgroundImage = Image.FromFile(@"cosmetics\default.png"),
                     BackgroundImagePath = @"cosmetics\default.png",
                     BackgroundImageLayout = ImageLayout.Center,
                     Tag = entry.Key,
-                    Name = entry.Value.CharacterName
+                    Name = entry.Value.CharacterName,
+                    BackColor = Color.FromArgb(44, 47, 51),
+                    BorderStyle = BorderStyle.FixedSingle,
+                    Cursor = Cursors.Hand
                 };
 
+                Color panelColor = panel.BackColor;
                 Label label = new Label
                 {
                     Text = entry.Value.CharacterName,
                     AutoSize = false,
                     Dock = DockStyle.Bottom,
-                    ForeColor = Color.White,
+                    ForeColor = IsColorDark(panelColor) ? Color.White : Color.Black,
                     TextAlign = ContentAlignment.MiddleCenter,
-                    Font = new Font("Arial", 8.25F, FontStyle.Bold),
-                    BackColor = Color.Transparent
+                    Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
+                    BackColor = Color.Transparent,
+                    Height = 22
                 };
 
                 panel.Controls.Add(label);
                 panel.Click += PanelManagement.Panel_Click;
-
-                totalWidth = panel.Right;
-                totalHeight += panel.Bottom;
                 flowLayoutPanel.Controls.Add(panel);
-
 
                 if (!ConfigManagement.config.Panels.ContainsKey(panel.Name))
                 {
@@ -310,18 +318,32 @@ namespace MultiClicker
                 }
             }
             RearrangePanels();
-            totalHeight += titleBar.Height;
-            this.ClientSize = new Size(totalWidth, totalHeight);
-            this.Location = new Point(Screen.PrimaryScreen.WorkingArea.Width - totalWidth - (Screen.PrimaryScreen.WorkingArea.Width/20), 0 + totalHeight + (Screen.PrimaryScreen.WorkingArea.Height / 10));
-            PanelManagement.Panel_Click(flowLayoutPanel.Controls[0], EventArgs.Empty);
+            flowLayoutPanel.AutoSize = true;
+            flowLayoutPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
 
+            Size panelSize = flowLayoutPanel.PreferredSize;
+            int width = panelSize.Width;
+            int height = panelSize.Height + titleBar.Height;
+
+            this.ClientSize = new Size(width, height);
+
+            // (Optionnel) repositionne la fenêtre si besoin
+            this.Location = new Point(
+                Screen.PrimaryScreen.WorkingArea.Width - this.ClientSize.Width - (Screen.PrimaryScreen.WorkingArea.Width / 20),
+                0 + titleBar.Height + (Screen.PrimaryScreen.WorkingArea.Height / 10)
+            );
+            if (flowLayoutPanel.Controls.Count > 0)
+                PanelManagement.Panel_Click(flowLayoutPanel.Controls[0], EventArgs.Empty);
 
             string updatedConfigJson = JsonConvert.SerializeObject(ConfigManagement.config, Formatting.Indented);
-
-
             File.WriteAllText("config.json", updatedConfigJson);
         }
-
+        private bool IsColorDark(Color color)
+        {
+            // Formule de luminance perceptuelle (standard)
+            double luminance = (0.299 * color.R + 0.587 * color.G + 0.114 * color.B);
+            return luminance < 128;
+        }
         private void RearrangePanels()
         {
 

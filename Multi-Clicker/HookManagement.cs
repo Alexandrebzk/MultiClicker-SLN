@@ -158,8 +158,8 @@ namespace MultiClicker
                             if (keysPressed.Contains(Keys.Oem7))
                             {
                                 System.Threading.Thread.Sleep(1000);
-                                WindowManagement.FillSellPriceBasedOnForeGroundWindow();
                                 keysPressed.RemoveAll(elt => elt == Keys.Oem7);
+                                WindowManagement.FillSellPriceBasedOnForeGroundWindow();
                             }
                             break;
                         case MouseMessages.WM_MBUTTONUP:
@@ -191,7 +191,16 @@ namespace MultiClicker
             {
                 foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
                 {
-                    WindowManagement.SimulateKeyPress(entry.Key, ConfigManagement.config.Keybinds[TRIGGERS.DOFUS_HAVENBAG], delay);
+                    try
+                    {
+                        Console.WriteLine("Sending character " + entry.Value.CharacterName + " to havenbag");
+                        System.Threading.Thread.Sleep(delay);
+                        WindowManagement.SimulateKeyPress(entry.Key, ConfigManagement.config.Keybinds[TRIGGERS.DOFUS_HAVENBAG], delay);
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace.WriteLine($"Error processing key sending to window {entry.Value.WindowName}: {ex.Message}");
+                    }
                 }
             });
         }

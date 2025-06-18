@@ -6,6 +6,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Tesseract;
@@ -50,6 +51,9 @@ namespace MultiClicker
         public static extern IntPtr PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")]
         static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsWindow(IntPtr hWnd);
         private static readonly object tessEngineLock = new object();
         private static TesseractEngine _engine = null;
 
@@ -110,6 +114,7 @@ namespace MultiClicker
 
         private const uint INPUT_KEYBOARD = 1;
         private const uint KEYEVENTF_KEYUP = 0x0002;
+        private const uint KEYEVENTF_KEYDOWN = 0x0000;
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern uint SendInput(uint nInputs, [MarshalAs(UnmanagedType.LPArray), In] INPUT[] pInputs, int cbSize);
@@ -176,14 +181,43 @@ namespace MultiClicker
             System.Threading.Thread.Sleep(10);
             SendMessage(windowHandle, Constants.WM_LBUTTONUP, IntPtr.Zero, lParam);
         }
+        public static bool CanReceiveMessages(IntPtr windowHandle)
+        {
+            return IsWindow(windowHandle);
+        }
+        public static bool IsWindowReadyForInput(IntPtr windowHandle)
+        {
+            // Vérifiez si la fenêtre est en premier plan
+            IntPtr foregroundWindow = GetForegroundWindow();
+            if (foregroundWindow != windowHandle)
+            {
+                return false;
+            }
 
+            // Vérifiez si la fenêtre n'est pas minimisée
+            if (IsIconic(windowHandle))
+            {
+                return false;
+            }
+
+            return true;
+        }
         public static void SimulateKeyPress(IntPtr windowHandle, Keys key, int delay)
         {
+            if (!CanReceiveMessages(windowHandle))
+            {
+                Console.WriteLine("The window cannot receive messages.");
+                return;
+            }
+
             System.Threading.Thread.Sleep(delay);
             ReleasePressedKeys();
-            PostMessage(windowHandle, HookManagement.WM_KEYDOWN, (IntPtr)key, IntPtr.Zero);
-            PostMessage(windowHandle, HookManagement.WM_KEYUP, (IntPtr)key, IntPtr.Zero);
+            SendMessage(windowHandle, HookManagement.WM_KEYDOWN, (IntPtr)key, IntPtr.Zero);
+            SendMessage(windowHandle, HookManagement.WM_KEYUP, (IntPtr)key, IntPtr.Zero);
         }
+
+
+
 
         public static void SimulateKeyPressListToCurrentWindow(List<Keys> keys, int delay)
         {
@@ -247,6 +281,7 @@ namespace MultiClicker
                 bool isFirstEntry = true;
                 foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
                 {
+                    Debug.WriteLine("Performing click on window " + entry.Value.WindowName);
                     int delay = noDelay ? ConfigManagement.config.General.FollowNoDelay : random.Next(ConfigManagement.config.General.MinimumFollowDelay, ConfigManagement.config.General.MaximumFollowDelay);
                     RECT rect = new RECT();
                     GetWindowRect(entry.Key, ref rect);
@@ -313,21 +348,6 @@ namespace MultiClicker
                 SimulateKeyPress(entry.Key, Keys.Enter, 500);
             }
         }
-
-        public static void StartCheckingForegroundWindowForText()
-        {
-            System.Timers.Timer timer = new System.Timers.Timer(500);
-            timer.Elapsed += (sender, e) =>
-            {
-                IntPtr activeWindowHandle = GetForegroundWindow();
-                if (IsRelatedHandle(activeWindowHandle))
-                {
-                    CheckForegroundWindowForText();
-                }
-            };
-            timer.Start();
-        }
-
         public static void FillSellPriceBasedOnForeGroundWindow()
         {
             var sellCurrentModeValue = GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_CURRENT_MODE]);
@@ -336,11 +356,11 @@ namespace MultiClicker
             var sellLot100Value = GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_100]);
 
             Dictionary<Rectangle, int> ValuesMap = new Dictionary<Rectangle, int>{
-                {sellCurrentModeValue, 0},
-                {sellLot1Value, 0},
-                {sellLot10Value, 0},
-                {sellLot100Value, 0},
-            };
+        {sellCurrentModeValue, 0},
+        {sellLot1Value, 0},
+        {sellLot10Value, 0},
+        {sellLot100Value, 0},
+    };
 
             try
             {
@@ -350,38 +370,36 @@ namespace MultiClicker
 
                     foreach (var elt in ValuesMap.Keys.ToList())
                     {
-                        var currentSellingModeBitmap = CaptureWindowArea((IntPtr)PanelManagement.selectedPanel.Tag, elt);
-                        using (var pix = PixConverter.ToPix(currentSellingModeBitmap))
+                        using (var originalBitmap = CaptureWindowArea((IntPtr)PanelManagement.selectedPanel.Tag, elt))
+                        using (var preprocessedBitmap = PreprocessForOCR(originalBitmap))
+                        using (var pix = PixConverter.ToPix(preprocessedBitmap))
+                        using (var page = engine.Process(pix, PageSegMode.SingleLine))
                         {
-                            using (var page = engine.Process(pix, PageSegMode.SingleLine))
-                            {
-                                string recognizedText = page.GetText().Trim();
-                                Match match = Regex.Match(recognizedText, @"\d+");
+                            // Nettoyage complet du texte reconnu
+                            string recognizedText = Regex.Replace(page.GetText(), @"\s+", "");
+                            Match match = Regex.Match(recognizedText, @"\d+");
 
-                                if (match.Success)
+                            if (match.Success)
+                            {
+                                string firstSequenceOfDigits = match.Value;
+                                Trace.WriteLine($"Recognized price: {recognizedText}");
+                                if (int.TryParse(firstSequenceOfDigits, out int parsedValue))
                                 {
-                                    string firstSequenceOfDigits = match.Value;
-                                    Trace.WriteLine($"Recognized price: {recognizedText}");
-                                    if (int.TryParse(firstSequenceOfDigits, out int parsedValue))
-                                    {
-                                        ValuesMap[elt] = parsedValue;
-                                    }
-                                    else
-                                    {
-                                        Trace.WriteLine($"Failed to parse first sequence of digits: {firstSequenceOfDigits}");
-                                    }
+                                    ValuesMap[elt] = parsedValue;
                                 }
                                 else
                                 {
-                                    Trace.WriteLine("No digits found in recognized text.");
+                                    Trace.WriteLine($"Failed to parse first sequence of digits: {firstSequenceOfDigits}");
                                 }
                             }
+                            else
+                            {
+                                Trace.WriteLine("No digits found in recognized text.");
+                            }
                         }
-                        currentSellingModeBitmap.Dispose();
                     }
                 }
-                if (!(ValuesMap[sellCurrentModeValue] == 1 && ValuesMap[sellLot1Value] != 0) &&
-    (ValuesMap[sellCurrentModeValue] == 0 || ValuesMap[sellLot1Value] == 0 || ValuesMap[sellLot10Value] == 0 || ValuesMap[sellLot100Value] == 0))
+                if (ValuesMap[sellCurrentModeValue] == 0)
                 {
                     return;
                 }
@@ -398,8 +416,14 @@ namespace MultiClicker
                         AmountToFill = ValuesMap[sellLot100Value];
                         break;
                 }
-                Trace.WriteLine($"Amount to fill: {AmountToFill}");
-                SendKeys.SendWait((AmountToFill - 1).ToString());
+                // Nettoyage supplémentaire si jamais
+                AmountToFill = int.Parse(AmountToFill.ToString().Trim());
+
+                Trace.WriteLine($"Amount to fill: {AmountToFill - 1}; current sell quantity: {ValuesMap[sellCurrentModeValue]}; recognized selling price: {AmountToFill}");
+                SendKeys.SendWait("^a");
+                System.Threading.Thread.Sleep(50);
+                SendKeys.SendWait("{DELETE}");
+                SendKeys.SendWait((AmountToFill - 1).ToString().Trim()); // Saisie du montant
             }
             catch (Exception ex)
             {
@@ -407,48 +431,57 @@ namespace MultiClicker
             }
             Trace.WriteLine("-------------------------");
         }
+
+        // Upscale, contraste, binarisation
+        private static Bitmap PreprocessForOCR(Bitmap src)
+        {
+            // Upscale ×2
+            Bitmap upscaled = new Bitmap(src.Width * 2, src.Height * 2);
+            using (Graphics g = Graphics.FromImage(upscaled))
+            {
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.DrawImage(src, new Rectangle(0, 0, upscaled.Width, upscaled.Height));
+            }
+
+            // Augmenter le contraste
+            Bitmap contrasted = new Bitmap(upscaled.Width, upscaled.Height);
+            float contrast = 1.5f;
+            float t = 0.5f * (1.0f - contrast);
+            var matrix = new System.Drawing.Imaging.ColorMatrix(new float[][]
+            {
+        new float[] {contrast, 0, 0, 0, 0},
+        new float[] {0, contrast, 0, 0, 0},
+        new float[] {0, 0, contrast, 0, 0},
+        new float[] {0, 0, 0, 1, 0},
+        new float[] {t, t, t, 0, 1}
+            });
+            var attributes = new System.Drawing.Imaging.ImageAttributes();
+            attributes.SetColorMatrix(matrix);
+            using (Graphics g = Graphics.FromImage(contrasted))
+            {
+                g.DrawImage(upscaled, new Rectangle(0, 0, upscaled.Width, upscaled.Height),
+                    0, 0, upscaled.Width, upscaled.Height, GraphicsUnit.Pixel, attributes);
+            }
+            upscaled.Dispose();
+
+            // Binarisation
+            Bitmap binarized = new Bitmap(contrasted.Width, contrasted.Height);
+            for (int y = 0; y < contrasted.Height; y++)
+            {
+                for (int x = 0; x < contrasted.Width; x++)
+                {
+                    Color pixel = contrasted.GetPixel(x, y);
+                    int luminance = (pixel.R + pixel.G + pixel.B) / 3;
+                    Color newColor = luminance > 140 ? Color.White : Color.Black;
+                    binarized.SetPixel(x, y, newColor);
+                }
+            }
+            contrasted.Dispose();
+            return binarized;
+        }
         private static Rectangle GetRectangleFromPosition(Position position)
         {
             return new Rectangle(position.X, position.Y, position.Width, position.Height);
-        }
-        private static void CheckForegroundWindowForText()
-        {
-            try
-            {
-                TesseractEngine engine = GetTesseractEngine();
-
-                using (var captureBitmap = CaptureWindowArea((IntPtr)PanelManagement.selectedPanel.Tag, GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.FIGHT_ANALISYS])))
-                using (var pix = PixConverter.ToPix(captureBitmap))
-                {
-                    string recognizedText;
-                    lock (tessEngineLock)
-                    {
-                        using (var page = engine.Process(pix))
-                        {
-                            recognizedText = page.GetText().Trim();
-                        }
-                    }
-
-                    if (string.IsNullOrEmpty(recognizedText))
-                    {
-                        return;
-                    }
-                    Trace.WriteLine($"Recognized text: {recognizedText}");
-
-                    foreach (var window in windowHandles)
-                    {
-                        var value = window.Value;
-                        if (recognizedText.Contains(value.CharacterName))
-                        {
-                            PanelManagement.Panel_Select(value.CharacterName);
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error processing combat OCR: {ex.Message}");
-            }
         }
         private static Bitmap CaptureWindowArea(IntPtr windowHandle, Rectangle screenRectangle)
         {
