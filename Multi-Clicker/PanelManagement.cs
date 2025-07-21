@@ -67,17 +67,22 @@ namespace MultiClicker
 
         public static void Panel_Click(object sender, EventArgs e)
         {
-
             ExtendedPanel panel = (ExtendedPanel)sender;
             IntPtr handle = (IntPtr)panel.Tag;
 
             if (selectedPanel != null)
             {
+                selectedPanel.IsSelected = false;
+                selectedPanel.Invalidate();
+                // Rétablir la couleur de fond
                 selectedPanel.BackColor = Color.Transparent;
             }
 
+            panel.IsSelected = true;
+            panel.Invalidate();
             panel.BackColor = ColorTranslator.FromHtml("#ddfe00");
             selectedPanel = panel;
+
             if (handle == GetForegroundWindow()) return;
             WindowManagement.SetHandleToForeGround(handle);
         }
@@ -97,6 +102,13 @@ namespace MultiClicker
             panel.BackColor = ColorTranslator.FromHtml("#ddfe00");
             selectedPanel = panel;
             WindowManagement.SetHandleToForeGround(handle);
+        }
+
+        // Ajoutez cette méthode utilitaire dans PanelManagement
+        public static bool IsColorDark(Color color)
+        {
+            double luminance = (0.299 * color.R + 0.587 * color.G + 0.114 * color.B);
+            return luminance < 128;
         }
     }
 }

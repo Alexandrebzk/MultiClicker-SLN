@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
@@ -62,6 +63,9 @@ namespace MultiClicker
         public const int SM_CYCAPTION = 4;
         private const int KEYUP = 0x2;
         private const uint Restore = 9;
+        private const int ClickOffset = 5;
+        private const int TitleBarOffset = 4;
+        private const int BinarizationThreshold = 140;
         private static string ocrLanguage = "fra";
         private static string tessdataPath = @"tessdata";
         public static Dictionary<IntPtr, WindowInfo> windowHandles = new Dictionary<IntPtr, WindowInfo>();
@@ -132,11 +136,10 @@ namespace MultiClicker
             EnumWindows((hWnd, lParam) =>
             {
                 int length = GetWindowTextLength(hWnd);
+                if (length == 0) return true; // Ignore les fenêtres sans titre
+
                 StringBuilder windowName = new StringBuilder(length + 1);
                 GetWindowText(hWnd, windowName, windowName.Capacity);
-
-                GetWindowThreadProcessId(hWnd, out uint windowProcessId);
-                Process process = Process.GetProcessById((int)windowProcessId);
 
                 try
                 {
@@ -159,103 +162,57 @@ namespace MultiClicker
 
             return windowHandles;
         }
-        public static void SimulateClick(IntPtr windowHandle, int x, int y, int delay)
+        public static void SimulateClick(IntPtr windowHandle, int x, int y)
         {
-            System.Threading.Thread.Sleep(delay);
-            IntPtr lParam = (IntPtr)((y << 16) | x);
-
-            SendMessage(windowHandle, Constants.WM_LBUTTONDOWN, new IntPtr(1), lParam);
-            System.Threading.Thread.Sleep(10);
-            SendMessage(windowHandle, Constants.WM_LBUTTONUP, IntPtr.Zero, lParam);
+            Task.Run(() =>
+            {
+                IntPtr lParam = (IntPtr)((y << 16) | x);
+                PostMessage(windowHandle, Constants.WM_LBUTTONDOWN, new IntPtr(1), lParam);
+                Thread.Sleep(10);
+                PostMessage(windowHandle, Constants.WM_LBUTTONUP, IntPtr.Zero, lParam);
+            });
         }
 
         public static void SimulateDoubleClick(IntPtr windowHandle, int x, int y)
         {
-            IntPtr lParam = (IntPtr)((y << 16) | x);
-
-            SendMessage(windowHandle, Constants.WM_LBUTTONDOWN, new IntPtr(1), lParam);
-            System.Threading.Thread.Sleep(10);
-            SendMessage(windowHandle, Constants.WM_LBUTTONUP, IntPtr.Zero, lParam);
-            System.Threading.Thread.Sleep(SystemInformation.DoubleClickTime / 2);
-            SendMessage(windowHandle, Constants.WM_LBUTTONDOWN, new IntPtr(1), lParam);
-            System.Threading.Thread.Sleep(10);
-            SendMessage(windowHandle, Constants.WM_LBUTTONUP, IntPtr.Zero, lParam);
-        }
-        public static bool CanReceiveMessages(IntPtr windowHandle)
-        {
-            return IsWindow(windowHandle);
-        }
-        public static bool IsWindowReadyForInput(IntPtr windowHandle)
-        {
-            // Vérifiez si la fenêtre est en premier plan
-            IntPtr foregroundWindow = GetForegroundWindow();
-            if (foregroundWindow != windowHandle)
+            Task.Run(() =>
             {
-                return false;
-            }
-
-            // Vérifiez si la fenêtre n'est pas minimisée
-            if (IsIconic(windowHandle))
-            {
-                return false;
-            }
-
-            return true;
-        }
-        public static void SimulateKeyPress(IntPtr windowHandle, Keys key, int delay)
-        {
-            if (!CanReceiveMessages(windowHandle))
-            {
-                Console.WriteLine("The window cannot receive messages.");
-                return;
-            }
-
-            System.Threading.Thread.Sleep(delay);
-            ReleasePressedKeys();
-            SendMessage(windowHandle, HookManagement.WM_KEYDOWN, (IntPtr)key, IntPtr.Zero);
-            SendMessage(windowHandle, HookManagement.WM_KEYUP, (IntPtr)key, IntPtr.Zero);
+                IntPtr lParam = (IntPtr)((y << 16) | x);
+                PostMessage(windowHandle, Constants.WM_LBUTTONDOWN, new IntPtr(1), lParam);
+                Thread.Sleep(10);
+                PostMessage(windowHandle, Constants.WM_LBUTTONUP, IntPtr.Zero, lParam);
+                Thread.Sleep(SystemInformation.DoubleClickTime / 2);
+                PostMessage(windowHandle, Constants.WM_LBUTTONDOWN, new IntPtr(1), lParam);
+                Thread.Sleep(10);
+                PostMessage(windowHandle, Constants.WM_LBUTTONUP, IntPtr.Zero, lParam);
+            });
         }
 
-
-
-
-        public static void SimulateKeyPressListToCurrentWindow(List<Keys> keys, int delay)
+        public static void SimulateKeyPress(IntPtr windowHandle, Keys key)
         {
-            ReleasePressedKeys();
-            List<INPUT> inputs = new List<INPUT>();
-            foreach (var key in keys)
+            // Envoi direct du message clavier sans focus
+            Task.Run(() =>
             {
-                inputs.Add(new INPUT
+                PostMessage(windowHandle, HookManagement.WM_KEYDOWN, (IntPtr)key, IntPtr.Zero);
+                Thread.Sleep(10);
+                PostMessage(windowHandle, HookManagement.WM_KEYUP, (IntPtr)key, IntPtr.Zero);
+            });
+        }
+
+        public static void SimulateKeyPressListToWindow(IntPtr windowHandle, List<Keys> keys, int delay)
+        {
+            Task.Run(() =>
+            {
+                Thread.Sleep(delay);
+                foreach (var key in keys)
                 {
-                    type = INPUT_KEYBOARD,
-                    u = new InputUnion
-                    {
-                        ki = new KEYBDINPUT
-                        {
-                            wVk = (ushort)key,
-                            dwFlags = 0
-                        }
-                    }
-                });
-            }
-            foreach (var key in keys.AsEnumerable().Reverse())
-            {
-                inputs.Add(new INPUT
+                    PostMessage(windowHandle, HookManagement.WM_KEYDOWN, (IntPtr)key, IntPtr.Zero);
+                }
+                foreach (var key in keys.AsEnumerable().Reverse())
                 {
-                    type = INPUT_KEYBOARD,
-                    u = new InputUnion
-                    {
-                        ki = new KEYBDINPUT
-                        {
-                            wVk = (ushort)key,
-                            dwFlags = KEYEVENTF_KEYUP
-                        }
-                    }
-                });
-            }
-            System.Threading.Thread.Sleep(50);
-            SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf(typeof(INPUT)));
-            System.Threading.Thread.Sleep(50);
+                    PostMessage(windowHandle, HookManagement.WM_KEYUP, (IntPtr)key, IntPtr.Zero);
+                }
+            });
         }
 
         public static void SetHandleToForeGround(IntPtr handle)
@@ -286,12 +243,14 @@ namespace MultiClicker
                     RECT rect = new RECT();
                     GetWindowRect(entry.Key, ref rect);
 
-                    if(isFirstEntry){
+                    if (isFirstEntry)
+                    {
                         delay = ConfigManagement.config.General.FollowNoDelay;
                         isFirstEntry = false;
                     }
                     POINT finalPositions = AdjustClickPosition(rect, cursorPos);
-                    SimulateClick(entry.Key, finalPositions.X, finalPositions.Y, delay);
+                    Thread.Sleep(delay);
+                    SimulateClick(entry.Key, finalPositions.X, finalPositions.Y);
                 }
             });
         }
@@ -324,9 +283,9 @@ namespace MultiClicker
             }
             else
             {
-                absoluteX = cursorPos.X - rect.Left - 5;
+                absoluteX = cursorPos.X - rect.Left - ClickOffset;
                 int titleBarHeight = GetSystemMetrics(SM_CYCAPTION);
-                absoluteY = cursorPos.Y - rect.Top - titleBarHeight - 5;
+                absoluteY = cursorPos.Y - rect.Top - titleBarHeight - TitleBarOffset;
 
             }
             return new POINT
@@ -341,11 +300,13 @@ namespace MultiClicker
             foreach (KeyValuePair<IntPtr, WindowInfo> entry in handles)
             {
                 PanelManagement.Panel_Select(entry.Value.CharacterName);
-                System.Threading.Thread.Sleep(500);
-                SimulateKeyPress(entry.Key, ConfigManagement.config.Keybinds[TRIGGERS.DOFUS_OPEN_DISCUSSION], 150);
+                System.Threading.Thread.Sleep(150);
+                SimulateKeyPress(entry.Key, ConfigManagement.config.Keybinds[TRIGGERS.DOFUS_OPEN_DISCUSSION]);
                 SendKeys.SendWait(inputText);
-                SimulateKeyPress(entry.Key, Keys.Enter, 150);
-                SimulateKeyPress(entry.Key, Keys.Enter, 500);
+                System.Threading.Thread.Sleep(150);
+                SimulateKeyPress(entry.Key, Keys.Enter);
+                System.Threading.Thread.Sleep(500);
+                SimulateKeyPress(entry.Key, Keys.Enter);
             }
         }
         public static void FillSellPriceBasedOnForeGroundWindow()
@@ -366,38 +327,38 @@ namespace MultiClicker
             {
                 using (var engine = new TesseractEngine(tessdataPath, ocrLanguage, EngineMode.Default))
                 {
-                    engine.SetVariable("tessedit_char_whitelist", "0123456789");
+                engine.SetVariable("tessedit_char_whitelist", "0123456789");
 
-                    foreach (var elt in ValuesMap.Keys.ToList())
+                foreach (var elt in ValuesMap.Keys.ToList())
+                {
+                    using (var originalBitmap = CaptureWindowArea((IntPtr)PanelManagement.selectedPanel.Tag, elt))
+                    using (var preprocessedBitmap = PreprocessForOCR(originalBitmap))
+                    using (var pix = PixConverter.ToPix(preprocessedBitmap))
+                    using (var page = engine.Process(pix, PageSegMode.SingleLine))
                     {
-                        using (var originalBitmap = CaptureWindowArea((IntPtr)PanelManagement.selectedPanel.Tag, elt))
-                        using (var preprocessedBitmap = PreprocessForOCR(originalBitmap))
-                        using (var pix = PixConverter.ToPix(preprocessedBitmap))
-                        using (var page = engine.Process(pix, PageSegMode.SingleLine))
-                        {
-                            // Nettoyage complet du texte reconnu
-                            string recognizedText = Regex.Replace(page.GetText(), @"\s+", "");
-                            Match match = Regex.Match(recognizedText, @"\d+");
+                        // Nettoyage complet du texte reconnu
+                        string recognizedText = Regex.Replace(page.GetText(), @"\s+", "");
+                        Match match = Regex.Match(recognizedText, @"\d+");
 
-                            if (match.Success)
+                        if (match.Success)
+                        {
+                            string firstSequenceOfDigits = match.Value;
+                            Trace.WriteLine($"Recognized price: {recognizedText}");
+                            if (int.TryParse(firstSequenceOfDigits, out int parsedValue))
                             {
-                                string firstSequenceOfDigits = match.Value;
-                                Trace.WriteLine($"Recognized price: {recognizedText}");
-                                if (int.TryParse(firstSequenceOfDigits, out int parsedValue))
-                                {
-                                    ValuesMap[elt] = parsedValue;
-                                }
-                                else
-                                {
-                                    Trace.WriteLine($"Failed to parse first sequence of digits: {firstSequenceOfDigits}");
-                                }
+                                ValuesMap[elt] = parsedValue;
                             }
                             else
                             {
-                                Trace.WriteLine("No digits found in recognized text.");
+                                Trace.WriteLine($"Failed to parse first sequence of digits: {firstSequenceOfDigits}");
                             }
                         }
+                        else
+                        {
+                            Trace.WriteLine("No digits found in recognized text.");
+                        }
                     }
+                }
                 }
                 if (ValuesMap[sellCurrentModeValue] == 0)
                 {
@@ -464,16 +425,15 @@ namespace MultiClicker
             }
             upscaled.Dispose();
 
-            // Binarisation
-            Bitmap binarized = new Bitmap(contrasted.Width, contrasted.Height);
+            Bitmap binarized = new Bitmap(contrasted.Width, contrasted.Height, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
             for (int y = 0; y < contrasted.Height; y++)
             {
                 for (int x = 0; x < contrasted.Width; x++)
                 {
                     Color pixel = contrasted.GetPixel(x, y);
                     int luminance = (pixel.R + pixel.G + pixel.B) / 3;
-                    Color newColor = luminance > 140 ? Color.White : Color.Black;
-                    binarized.SetPixel(x, y, newColor);
+                    byte val = (byte)(luminance > BinarizationThreshold ? 255 : 0);
+                    binarized.SetPixel(x, y, Color.FromArgb(val, val, val));
                 }
             }
             contrasted.Dispose();

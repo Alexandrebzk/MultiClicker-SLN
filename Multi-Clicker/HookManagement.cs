@@ -55,7 +55,7 @@ namespace MultiClicker
         public static extern IntPtr WindowFromPoint(POINT Point); 
         [DllImport("user32.dll")]
         static extern short GetKeyState(int nVirtKey);
-        public static List<Keys> keysPressed = new List<Keys>();
+        public static HashSet<Keys> keysPressed = new HashSet<Keys>();
         public const int WM_KEYDOWN = 0x0100;
         public const int WM_KEYUP = 0x0101;
         public const int WH_MOUSE_LL = 14;
@@ -66,120 +66,95 @@ namespace MultiClicker
 
         public static Action ShouldOpenKeyBindForm { get; internal set; }
 
-        private static void checkForModifiers()
+        private static void UpdateModifiers()
         {
             bool isAltPressed = (GetKeyState(0x12) & 0x8000) != 0;
             bool isCtrlPressed = (GetKeyState(0x11) & 0x8000) != 0;
-            if (isAltPressed && !keysPressed.Contains(Keys.Alt))
-            {
-                keysPressed.Add(Keys.Alt);
-            }
-            else
-            {
-                keysPressed.Remove(Keys.Alt);
-            }
-            if (isCtrlPressed && !keysPressed.Contains(Keys.LControlKey))
-            {
-                keysPressed.Add(Keys.LControlKey);
-            }
-            else
-            {
-                keysPressed.Remove(Keys.LControlKey);
-            }
+
+            if (isAltPressed) keysPressed.Add(Keys.Alt); else keysPressed.Remove(Keys.Alt);
+            if (isCtrlPressed) keysPressed.Add(Keys.LControlKey); else keysPressed.Remove(Keys.LControlKey);
         }
 
         public static IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
-            if (!WindowManagement.IsRelatedHandle(GetForegroundWindow()))
-            {
+            if (nCode < 0 || !WindowManagement.IsRelatedHandle(GetForegroundWindow()))
                 return CallNextHookEx(MultiClicker._keyboardHookID, nCode, wParam, lParam);
-            }
-            Random random = new Random();
-            if (nCode >= 0)
+
+            Keys key = (Keys)Marshal.ReadInt32(lParam);
+            UpdateModifiers();
+            if (wParam == (IntPtr)WM_KEYDOWN)
             {
-                Keys key = (Keys)Marshal.ReadInt32(lParam);
-                checkForModifiers();
-                if (wParam == (IntPtr)WM_KEYDOWN)
+                if (key == Keys.Oem7)
                 {
-                    if(!keysPressed.Contains(key))
-                        keysPressed.Add(key);
-                    if (ConfigManagement.config.Keybinds.Values.Contains(key))
+                    keysPressed.Add(Keys.Oem7);
+                }
+                if (keysPressed.Add(key) && ConfigManagement.config.Keybinds.Values.Contains(key))
+                {
+                    var trigger = ConfigManagement.config.Keybinds.First(kvp => kvp.Value == key).Key;
+                    if (KeyActions.TryGetValue(trigger, out var action))
                     {
-                        var trigger = ConfigManagement.config.Keybinds.First(kvp => kvp.Value == key).Key;
-                        if (KeyActions.ContainsKey(trigger))
-                        {
-                            KeyActions[trigger](null);
-                            keysPressed.Remove(key);
-                        }
-                    }
-                    if (key == Keys.V && keysPressed.Contains(Keys.Alt) && keysPressed.Contains(Keys.LControlKey))
-                    {
-                        PasteOnAllWindowsHandler();
+                        Task.Run(() => action(null));
                     }
                 }
-                else if (wParam == (IntPtr)WM_KEYUP)
+                if (key == Keys.V && keysPressed.Contains(Keys.Alt) && keysPressed.Contains(Keys.LControlKey))
                 {
-                    if (key == ConfigManagement.config.Keybinds[TRIGGERS.TRAVEL])
-                    {
-                        ShouldOpenMenuTravel?.Invoke();
-                    }
-                    if (key == ConfigManagement.config.Keybinds[TRIGGERS.OPTIONS])
-                    {
-                        ShouldOpenKeyBindForm?.Invoke();
-                    }
-                    keysPressed.RemoveAll(elt => elt == key);
+                    Task.Run(PasteOnAllWindowsHandler);
                 }
+            }
+            else if (wParam == (IntPtr)WM_KEYUP)
+            {
+                keysPressed.Remove(key);
+                if (key == ConfigManagement.config.Keybinds[TRIGGERS.TRAVEL]) ShouldOpenMenuTravel?.Invoke();
+                if (key == ConfigManagement.config.Keybinds[TRIGGERS.OPTIONS]) ShouldOpenKeyBindForm?.Invoke();
             }
             return CallNextHookEx(MultiClicker._keyboardHookID, nCode, wParam, lParam);
         }
 
         public static IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
-            if (!WindowManagement.IsRelatedHandle(GetForegroundWindow()))
-            {
-                return CallNextHookEx(MultiClicker._keyboardHookID, nCode, wParam, lParam);
-            }
-            if (nCode >= 0)
-            {
-                GetCursorPos(out cursorPos);
-                IntPtr hWnd = WindowFromPoint(cursorPos);
-                MouseMessages message = (MouseMessages)wParam;
-                checkForModifiers();
+            if (nCode < 0 || !WindowManagement.IsRelatedHandle(GetForegroundWindow()))
+                return CallNextHookEx(MultiClicker._mouseHookID, nCode, wParam, lParam);
 
-                if (WindowManagement.windowHandles.ContainsKey(hWnd))
-                {
-                    switch (message)
+            GetCursorPos(out cursorPos);
+            IntPtr hWnd = WindowFromPoint(cursorPos);
+            MouseMessages message = (MouseMessages)wParam;
+            UpdateModifiers();
+
+            if (!WindowManagement.windowHandles.ContainsKey(hWnd))
+                return CallNextHookEx(MultiClicker._mouseHookID, nCode, wParam, lParam);
+
+            switch (message)
+            {
+                case MouseMessages.WM_RBUTTONDOWN:
+                    if (ConfigManagement.IS_MODIFYING_KEY_BINDS)
+                        KeyBindForm.choosePosition();
+                    break;
+                case MouseMessages.WM_LBUTTONDOWN:
+                    if (keysPressed.Contains(Keys.Oem7))
                     {
-                        case MouseMessages.WM_RBUTTONDOWN:
-                            if(ConfigManagement.IS_MODIFYING_KEY_BINDS)
-                                KeyBindForm.choosePosition();
-                            break;
-                        case MouseMessages.WM_LBUTTONDOWN:
-                            if (keysPressed.Contains(Keys.Oem7))
-                            {
-                                System.Threading.Thread.Sleep(1000);
-                                keysPressed.RemoveAll(elt => elt == Keys.Oem7);
-                                WindowManagement.FillSellPriceBasedOnForeGroundWindow();
-                            }
-                            break;
-                        case MouseMessages.WM_MBUTTONUP:
-                            System.Threading.Thread.Sleep(150);
-                            WindowManagement.PerformWindowDoubleClick(cursorPos);
-                            break;
-                        case MouseMessages.WM_XBUTTONDOWN:
-                            MSLLHOOKSTRUCT hookStruct = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
-                            int xButton = (int)(hookStruct.mouseData >> 16);
-                            if (xButton == 1)
-                            {
-                                WindowManagement.PerformWindowClick(cursorPos, false);
-                            }
-                            else if (xButton == 2)
-                            {
-                                WindowManagement.PerformWindowClick(cursorPos, true);
-                            }
-                            break;
+                        Task.Run(() =>
+                        {
+                            Trace.WriteLine($"Starting price analysis");
+                            System.Threading.Thread.Sleep(800);
+                            keysPressed.Remove(Keys.Oem7);
+                            WindowManagement.FillSellPriceBasedOnForeGroundWindow();
+                        });
                     }
-                }
+                    break;
+                case MouseMessages.WM_MBUTTONUP:
+                    Task.Run(() => WindowManagement.PerformWindowDoubleClick(cursorPos));
+                    break;
+                case MouseMessages.WM_XBUTTONDOWN:
+                    MSLLHOOKSTRUCT hookStruct = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
+                    int xButton = (int)(hookStruct.mouseData >> 16);
+                    Task.Run(() =>
+                    {
+                        if (xButton == 1)
+                            WindowManagement.PerformWindowClick(cursorPos, false);
+                        else if (xButton == 2)
+                            WindowManagement.PerformWindowClick(cursorPos, true);
+                    });
+                    break;
             }
             return CallNextHookEx(MultiClicker._mouseHookID, nCode, wParam, lParam);
         }
@@ -195,7 +170,7 @@ namespace MultiClicker
                     {
                         Console.WriteLine("Sending character " + entry.Value.CharacterName + " to havenbag");
                         System.Threading.Thread.Sleep(delay);
-                        WindowManagement.SimulateKeyPress(entry.Key, ConfigManagement.config.Keybinds[TRIGGERS.DOFUS_HAVENBAG], delay);
+                        WindowManagement.SimulateKeyPress(entry.Key, ConfigManagement.config.Keybinds[TRIGGERS.DOFUS_HAVENBAG]);
                     }
                     catch (Exception ex)
                     {
@@ -206,12 +181,12 @@ namespace MultiClicker
         }
         public static void PasteOnAllWindowsHandler()
         {
-            int delay = ConfigManagement.config.General.FollowNoDelay;
+            int delay = Random.Next(ConfigManagement.config.General.MinimumFollowDelay, ConfigManagement.config.General.MaximumFollowDelay);
             Task.Run(() =>
             {
                 foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
                 {
-                    WindowManagement.SimulateKeyPressListToCurrentWindow(new List<Keys> { Keys.LControlKey, Keys.V }, delay);
+                    WindowManagement.SimulateKeyPressListToWindow(entry.Key, new List<Keys> { Keys.LControlKey, Keys.V }, delay);
                     PanelManagement.SelectNextPanel();
                 }
             });

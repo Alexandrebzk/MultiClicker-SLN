@@ -22,6 +22,19 @@ namespace MultiClicker
     public class ExtendedPanel : Panel
     {
         public string BackgroundImagePath { get; set; }
+        public bool IsSelected { get; set; } // Ajout
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            if (IsSelected)
+            {
+                using (Pen pen = new Pen(Color.LimeGreen, 4))
+                {
+                    Rectangle rect = new Rectangle(1, 1, this.Width - 5, this.Height - 5);
+                    e.Graphics.DrawRectangle(pen, rect);
+                }
+            }
+        }
     }
     public partial class MultiClicker : Form
     {
@@ -278,30 +291,58 @@ namespace MultiClicker
                     }
                 });
             };
-            foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
+
+            var imageCache = new Dictionary<string, Image>();
+            string defaultImagePath = @"cosmetics\default.png";
+            imageCache[defaultImagePath] = Image.FromFile(defaultImagePath);
+
+            foreach (var panelCfg in ConfigManagement.config.Panels)
             {
+                string imgPath = panelCfg.Value.Background ?? defaultImagePath;
+                if (!imageCache.ContainsKey(imgPath))
+                {
+                    imageCache[imgPath] = File.Exists(imgPath) ? Image.FromFile(imgPath) : imageCache[defaultImagePath];
+                }
+            }
+
+            flowLayoutPanel.SuspendLayout();
+            flowLayoutPanel.Controls.Clear();
+
+            foreach (var panelEntry in ConfigManagement.config.Panels)
+            {
+                string panelName = panelEntry.Key;
+                PanelConfig panelConfig = panelEntry.Value;
+                string imgPath = panelConfig.Background ?? defaultImagePath;
+
+                var handleEntry = WindowManagement.windowHandles.FirstOrDefault(e => e.Value.CharacterName == panelName);
+                if (handleEntry.Key == IntPtr.Zero)
+                    continue;
+
+                Image panelImage = imageCache[imgPath];
+                Color avgColor = GetAverageColor(panelImage);
+
                 ExtendedPanel panel = new ExtendedPanel
                 {
                     ContextMenuStrip = contextMenu,
                     Size = new Size(70, 70),
                     Margin = new Padding(5, 5, 5, 5),
-                    BackgroundImage = Image.FromFile(@"cosmetics\default.png"),
-                    BackgroundImagePath = @"cosmetics\default.png",
+                    BackgroundImage = panelImage,
+                    BackgroundImagePath = imgPath,
                     BackgroundImageLayout = ImageLayout.Center,
-                    Tag = entry.Key,
-                    Name = entry.Value.CharacterName,
-                    BackColor = Color.FromArgb(44, 47, 51),
+                    Tag = handleEntry.Key,
+                    Name = panelName,
+                    BackColor = avgColor,
                     BorderStyle = BorderStyle.FixedSingle,
                     Cursor = Cursors.Hand
                 };
+                handleEntry.Value.relatedPanel = panel;
 
-                Color panelColor = panel.BackColor;
                 Label label = new Label
                 {
-                    Text = entry.Value.CharacterName,
+                    Text = panelName,
                     AutoSize = false,
                     Dock = DockStyle.Bottom,
-                    ForeColor = IsColorDark(panelColor) ? Color.White : Color.Black,
+                    ForeColor = PanelManagement.IsColorDark(panel.BackColor) ? Color.White : Color.Black,
                     TextAlign = ContentAlignment.MiddleCenter,
                     Font = new Font("Segoe UI", 9.5F, FontStyle.Bold),
                     BackColor = Color.Transparent,
@@ -311,13 +352,9 @@ namespace MultiClicker
                 panel.Controls.Add(label);
                 panel.Click += PanelManagement.Panel_Click;
                 flowLayoutPanel.Controls.Add(panel);
-
-                if (!ConfigManagement.config.Panels.ContainsKey(panel.Name))
-                {
-                    ConfigManagement.config.Panels[panel.Name] = new PanelConfig { Background = @"cosmetics\default.png" };
-                }
             }
-            RearrangePanels();
+
+            flowLayoutPanel.ResumeLayout();
             flowLayoutPanel.AutoSize = true;
             flowLayoutPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
 
@@ -338,52 +375,26 @@ namespace MultiClicker
             string updatedConfigJson = JsonConvert.SerializeObject(ConfigManagement.config, Formatting.Indented);
             File.WriteAllText("config.json", updatedConfigJson);
         }
-        private bool IsColorDark(Color color)
+        private Color GetAverageColor(Image image)
         {
-            // Formule de luminance perceptuelle (standard)
-            double luminance = (0.299 * color.R + 0.587 * color.G + 0.114 * color.B);
-            return luminance < 128;
-        }
-        private void RearrangePanels()
-        {
-
-            List<ExtendedPanel> panels = new List<ExtendedPanel>();
-
-
-            foreach (var panel in ConfigManagement.config.Panels)
+            if (image == null) return Color.FromArgb(44, 47, 51);
+            using (var bmp = new Bitmap(image))
             {
-                ExtendedPanel extendedPanel = flowLayoutPanel.Controls.Find(panel.Key, true).FirstOrDefault() as ExtendedPanel;
-                if (extendedPanel != null)
+                long r = 0, g = 0, b = 0;
+                int pixelCount = bmp.Width * bmp.Height;
+                for (int x = 0; x < bmp.Width; x++)
                 {
-                    PanelManagement.SetPanelBackground(extendedPanel, panel.Value.Background);
-                    panels.Add(extendedPanel);
+                    for (int y = 0; y < bmp.Height; y++)
+                    {
+                        Color pixel = bmp.GetPixel(x, y);
+                        r += pixel.R;
+                        g += pixel.G;
+                        b += pixel.B;
+                    }
                 }
+                if (pixelCount == 0) return Color.FromArgb(44, 47, 51);
+                return Color.FromArgb((int)(r / pixelCount), (int)(g / pixelCount), (int)(b / pixelCount));
             }
-
-
-            flowLayoutPanel.Controls.Clear();
-
-
-            foreach (var panel in panels)
-            {
-                flowLayoutPanel.Controls.Add(panel);
-            }
-
-            Dictionary<IntPtr, WindowInfo> newWindowHandles = new Dictionary<IntPtr, WindowInfo>();
-
-
-            foreach (ExtendedPanel panel in flowLayoutPanel.Controls)
-            {
-                IntPtr handle = (IntPtr)panel.Tag;
-                if (WindowManagement.windowHandles.ContainsKey(handle))
-                {
-                    newWindowHandles[handle] = WindowManagement.windowHandles[handle];
-                }
-            }
-
-
-            WindowManagement.windowHandles = newWindowHandles;
-            PanelManagement.Panel_Click(flowLayoutPanel.Controls[0], EventArgs.Empty);
         }
 
         private void ChangeImagePanel_Click(object sender, EventArgs e)
