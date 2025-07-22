@@ -182,14 +182,11 @@ namespace MultiClicker
         public static void PasteOnAllWindowsHandler()
         {
             int delay = Random.Next(ConfigManagement.config.General.MinimumFollowDelay, ConfigManagement.config.General.MaximumFollowDelay);
-            Task.Run(() =>
+            foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
             {
-                foreach (KeyValuePair<IntPtr, WindowInfo> entry in WindowManagement.windowHandles)
-                {
-                    WindowManagement.SimulateKeyPressListToWindow(entry.Key, new List<Keys> { Keys.LControlKey, Keys.V }, delay);
-                    PanelManagement.SelectNextPanel();
-                }
-            });
+                WindowManagement.SimulateKeyPressListToWindow(entry.Key, new List<Keys> { Keys.LControlKey, Keys.V }, delay);
+                PanelManagement.SelectNextPanel();
+            }
         }
         private static void GroupHandler()
         {
