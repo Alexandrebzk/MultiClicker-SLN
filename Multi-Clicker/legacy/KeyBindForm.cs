@@ -4,8 +4,6 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.CompilerServices;
 using System.Windows.Forms;
-using MultiClicker.Models;
-using MultiClicker.Services;
 
 namespace MultiClicker
 {
@@ -30,7 +28,6 @@ namespace MultiClicker
                 overlayForm.Close();
             }
         }
-        
         public KeyBindForm()
         {
             InitializeComponent();
@@ -40,7 +37,7 @@ namespace MultiClicker
 
             overlayForm = new PositionOverlayForm
             {
-                Positions = ConfigurationService.Current.Positions,
+                Positions = ConfigManagement.config.Positions,
                 PositionColors = positionColors
             };
             overlayForm.Show();
@@ -72,7 +69,7 @@ namespace MultiClicker
             tableLayoutPanel.RowStyles.Clear();
             positionColors.Clear();
 
-            int numberOfTriggers = ConfigurationService.Current.Positions.Count;
+            int numberOfTriggers = ConfigManagement.config.Positions.Count;
             tableLayoutPanel.RowCount = numberOfTriggers + 1;
             tableLayoutPanel.ColumnCount = 4;
 
@@ -88,9 +85,9 @@ namespace MultiClicker
 
             Random rand = new Random();
             int rowIndex = 1;
-            foreach (var trigger in ConfigurationService.Current.Positions.Keys)
+            foreach (var trigger in ConfigManagement.config.Positions.Keys)
             {
-                Position position = ConfigurationService.Current.Positions[trigger];
+                Position position = ConfigManagement.config.Positions[trigger];
                 AddCell(new Label { Text = trigger.ToString(), TextAlign = ContentAlignment.MiddleCenter }, 0, rowIndex);
                 AddCell(new Label { Text = $"X: {position.X}, Y: {position.Y}, W: {position.Width}, H: {position.Height}", TextAlign = ContentAlignment.MiddleCenter }, 1, rowIndex);
 
@@ -122,7 +119,7 @@ namespace MultiClicker
         }
         private void UpdateButton_Click(TRIGGERS_POSITIONS trigger)
         {
-            ConfigurationService.IsModifyingKeyBinds = true;
+            ConfigManagement.IS_MODIFYING_KEY_BINDS = true;
             currentTrigger = trigger;
             firstClick = null;
         }
@@ -131,39 +128,37 @@ namespace MultiClicker
         {
             OnUpdateCompleted?.Invoke();
         }
-        
         private void UpdateManager_OnUpdateCompleted()
         {
             this.Invoke((MethodInvoker)delegate
             {
-                overlayForm.Positions = ConfigurationService.Current.Positions;
+                overlayForm.Positions = ConfigManagement.config.Positions;
                 overlayForm.PositionColors = positionColors;
                 overlayForm.RefreshOverlay();
                 PopulateTable();
             });
         }
-        
         public static void choosePosition()
         {
             if (firstClick == null)
             {
-                firstClick = HookManagementService.CursorPosition;
+                firstClick = HookManagement.cursorPos;
             }
             else
             {
-                Trace.WriteLine($"First click: {firstClick.Value}, Second click: {HookManagementService.CursorPosition}");
+                Trace.WriteLine($"First click: {firstClick.Value}, Second click: {HookManagement.cursorPos}");
                 Position newPosition = new Position
                 {
-                    X = Math.Min(firstClick.Value.X, HookManagementService.CursorPosition.X),
-                    Y = Math.Min(firstClick.Value.Y, HookManagementService.CursorPosition.Y),
-                    Width = Math.Abs(firstClick.Value.X - HookManagementService.CursorPosition.X),
-                    Height = Math.Abs(firstClick.Value.Y - HookManagementService.CursorPosition.Y)
+                    X = Math.Min(firstClick.Value.X, HookManagement.cursorPos.X),
+                    Y = Math.Min(firstClick.Value.Y, HookManagement.cursorPos.Y),
+                    Width = Math.Abs(firstClick.Value.X - HookManagement.cursorPos.X),
+                    Height = Math.Abs(firstClick.Value.Y - HookManagement.cursorPos.Y)
                 };
-                ConfigurationService.Current.Positions[currentTrigger] = newPosition;
-                ConfigurationService.SaveConfig();
+                ConfigManagement.config.Positions[currentTrigger] = newPosition;
+                ConfigManagement.SaveConfig();
                 TriggerUpdate();
                 firstClick = null;
-                ConfigurationService.IsModifyingKeyBinds = false;
+                ConfigManagement.IS_MODIFYING_KEY_BINDS = false;
             }
         }
     }

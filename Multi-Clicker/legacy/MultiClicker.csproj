@@ -76,6 +76,7 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="ConfigManagement.cs" />
     <Compile Include="Constants.cs" />
     <Compile Include="FileTraceListener.cs" />
     <Compile Include="KeyBindForm.cs">
@@ -84,6 +85,14 @@
     <Compile Include="KeyBindForm.Designer.cs">
       <DependentUpon>KeyBindForm.cs</DependentUpon>
     </Compile>
+    <Compile Include="MultiClicker.cs">
+      <SubType>Component</SubType>
+    </Compile>
+    <Compile Include="MultiClicker.Designer.cs">
+      <DependentUpon>MultiClicker.cs</DependentUpon>
+    </Compile>
+    <Compile Include="HookManagement.cs" />
+    <Compile Include="PanelManagement.cs" />
     <Compile Include="PositionOverlayForm.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -98,21 +107,10 @@
     <Compile Include="ReplicateTextForm.Designer.cs">
       <DependentUpon>ReplicateTextForm.cs</DependentUpon>
     </Compile>
-    <Compile Include="Core\ApplicationManager.cs" />
-    <Compile Include="Core\EventHandler.cs" />
-    <Compile Include="Models\ConfigModels.cs" />
-    <Compile Include="Services\ConfigurationService.cs" />
-    <Compile Include="Services\OCRService.cs" />
-    <Compile Include="Services\WindowManagementService.cs" />
-    <Compile Include="Services\HookManagementService.cs" />
-    <Compile Include="Services\PanelManagementService.cs" />
-    <Compile Include="UI\MultiClickerForm.cs">
-      <SubType>Component</SubType>
-    </Compile>
-    <Compile Include="UI\MultiClickerForm.Designer.cs">
-      <DependentUpon>MultiClickerForm.cs</DependentUpon>
-    </Compile>
-    <EmbeddedResource Include="MultiClicker.resx" />
+    <Compile Include="WindowManagement.cs" />
+    <EmbeddedResource Include="MultiClicker.resx">
+      <DependentUpon>MultiClicker.cs</DependentUpon>
+    </EmbeddedResource>
     <EmbeddedResource Include="Properties\Resources.resx">
       <Generator>ResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
