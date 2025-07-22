@@ -47,6 +47,7 @@ namespace MultiClicker
         SELL_LOT_1,
         SELL_LOT_10,
         SELL_LOT_100,
+        SELL_LOT_1000
     }
 
     public class Config
@@ -90,7 +91,8 @@ namespace MultiClicker
                         { TRIGGERS_POSITIONS.SELL_CURRENT_MODE, new Position{ X = 0, Y = 0, Width = 0, Height = 0} },
                         { TRIGGERS_POSITIONS.SELL_LOT_1, new Position{ X = 0, Y = 0, Width = 0, Height = 0} },
                         { TRIGGERS_POSITIONS.SELL_LOT_10, new Position{ X = 0, Y = 0, Width = 0, Height = 0} },
-                        { TRIGGERS_POSITIONS.SELL_LOT_100, new Position{ X = 0, Y = 0, Width = 0, Height = 0} }
+                        { TRIGGERS_POSITIONS.SELL_LOT_100, new Position{ X = 0, Y = 0, Width = 0, Height = 0} },
+                        { TRIGGERS_POSITIONS.SELL_LOT_1000, new Position{ X = 0, Y = 0, Width = 0, Height = 0} }
                     };
                 }else
                 {
@@ -109,6 +111,10 @@ namespace MultiClicker
                     if (!config.Positions.ContainsKey(TRIGGERS_POSITIONS.SELL_LOT_100))
                     {
                         config.Positions.Add(TRIGGERS_POSITIONS.SELL_LOT_100, new Position { X = 0, Y = 0, Width = 0, Height = 0 });
+                    }
+                    if (!config.Positions.ContainsKey(TRIGGERS_POSITIONS.SELL_LOT_1000))
+                    {
+                        config.Positions.Add(TRIGGERS_POSITIONS.SELL_LOT_1000, new Position { X = 0, Y = 0, Width = 0, Height = 0 });
                     }
                 }
                 if (config.General == null)

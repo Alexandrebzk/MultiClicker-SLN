@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using Tesseract;
 using static MultiClicker.MultiClicker;
+using System.Drawing.Imaging;
 
 namespace MultiClicker
 {
@@ -136,7 +137,7 @@ namespace MultiClicker
             EnumWindows((hWnd, lParam) =>
             {
                 int length = GetWindowTextLength(hWnd);
-                if (length == 0) return true; // Ignore les fenêtres sans titre
+                if (length == 0) return true; // Ignore windows without title
 
                 StringBuilder windowName = new StringBuilder(length + 1);
                 GetWindowText(hWnd, windowName, windowName.Capacity);
@@ -315,12 +316,14 @@ namespace MultiClicker
             var sellLot1Value = GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_1]);
             var sellLot10Value = GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_10]);
             var sellLot100Value = GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_100]);
+            var sellLot1000Value = GetRectangleFromPosition(ConfigManagement.config.Positions[TRIGGERS_POSITIONS.SELL_LOT_1000]);
 
             Dictionary<Rectangle, int> ValuesMap = new Dictionary<Rectangle, int>{
         {sellCurrentModeValue, 0},
         {sellLot1Value, 0},
         {sellLot10Value, 0},
         {sellLot100Value, 0},
+        {sellLot1000Value, 0},
     };
 
             try
@@ -336,7 +339,6 @@ namespace MultiClicker
                     using (var pix = PixConverter.ToPix(preprocessedBitmap))
                     using (var page = engine.Process(pix, PageSegMode.SingleLine))
                     {
-                        // Nettoyage complet du texte reconnu
                         string recognizedText = Regex.Replace(page.GetText(), @"\s+", "");
                         Match match = Regex.Match(recognizedText, @"\d+");
 
@@ -377,7 +379,6 @@ namespace MultiClicker
                         AmountToFill = ValuesMap[sellLot100Value];
                         break;
                 }
-                // Nettoyage supplémentaire si jamais
                 AmountToFill = int.Parse(AmountToFill.ToString().Trim());
 
                 Trace.WriteLine($"Amount to fill: {AmountToFill - 1}; current sell quantity: {ValuesMap[sellCurrentModeValue]}; recognized selling price: {AmountToFill}");
@@ -393,51 +394,90 @@ namespace MultiClicker
             Trace.WriteLine("-------------------------");
         }
 
-        // Upscale, contraste, binarisation
         private static Bitmap PreprocessForOCR(Bitmap src)
         {
-            // Upscale ×2
-            Bitmap upscaled = new Bitmap(src.Width * 2, src.Height * 2);
+            int scale = 4;
+            Bitmap upscaled = new Bitmap(src.Width * scale, src.Height * scale);
             using (Graphics g = Graphics.FromImage(upscaled))
             {
                 g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                 g.DrawImage(src, new Rectangle(0, 0, upscaled.Width, upscaled.Height));
             }
 
-            // Augmenter le contraste
-            Bitmap contrasted = new Bitmap(upscaled.Width, upscaled.Height);
-            float contrast = 1.5f;
-            float t = 0.5f * (1.0f - contrast);
-            var matrix = new System.Drawing.Imaging.ColorMatrix(new float[][]
-            {
-        new float[] {contrast, 0, 0, 0, 0},
-        new float[] {0, contrast, 0, 0, 0},
-        new float[] {0, 0, contrast, 0, 0},
-        new float[] {0, 0, 0, 1, 0},
-        new float[] {t, t, t, 0, 1}
-            });
-            var attributes = new System.Drawing.Imaging.ImageAttributes();
-            attributes.SetColorMatrix(matrix);
-            using (Graphics g = Graphics.FromImage(contrasted))
-            {
-                g.DrawImage(upscaled, new Rectangle(0, 0, upscaled.Width, upscaled.Height),
-                    0, 0, upscaled.Width, upscaled.Height, GraphicsUnit.Pixel, attributes);
-            }
-            upscaled.Dispose();
+            BitmapData data = upscaled.LockBits(new Rectangle(0, 0, upscaled.Width, upscaled.Height), 
+                ImageLockMode.ReadWrite, PixelFormat.Format24bppRgb);
+            int stride = data.Stride;
+            IntPtr scan0 = data.Scan0;
+            int bytes = stride * upscaled.Height;
+            byte[] pixelBuffer = new byte[bytes];
+            System.Runtime.InteropServices.Marshal.Copy(scan0, pixelBuffer, 0, bytes);
 
-            Bitmap binarized = new Bitmap(contrasted.Width, contrasted.Height, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
-            for (int y = 0; y < contrasted.Height; y++)
+            int minGray = 255, maxGray = 0;
+            int totalPixels = upscaled.Width * upscaled.Height;
+            
+            for (int y = 0; y < upscaled.Height; y++)
             {
-                for (int x = 0; x < contrasted.Width; x++)
+                int row = y * stride;
+                for (int x = 0; x < upscaled.Width; x++)
                 {
-                    Color pixel = contrasted.GetPixel(x, y);
-                    int luminance = (pixel.R + pixel.G + pixel.B) / 3;
-                    byte val = (byte)(luminance > BinarizationThreshold ? 255 : 0);
-                    binarized.SetPixel(x, y, Color.FromArgb(val, val, val));
+                    int idx = row + x * 3;
+                    if (idx + 2 >= pixelBuffer.Length) continue;
+                    
+                    int b = pixelBuffer[idx];
+                    int g = pixelBuffer[idx + 1];
+                    int r = pixelBuffer[idx + 2];
+                    int gray = (int)(0.299 * r + 0.587 * g + 0.114 * b);
+                    
+                    if (gray < minGray) minGray = gray;
+                    if (gray > maxGray) maxGray = gray;
                 }
             }
-            contrasted.Dispose();
-            return binarized;
+
+            int grayRange = maxGray - minGray;
+            int threshold;
+            
+            if (grayRange < 20)
+            {
+                threshold = (minGray + maxGray) / 2;
+            }
+            else
+            {
+                threshold = minGray + (int)(grayRange * 0.4);
+            }
+
+            for (int y = 0; y < upscaled.Height; y++)
+            {
+                int row = y * stride;
+                for (int x = 0; x < upscaled.Width; x++)
+                {
+                    int idx = row + x * 3;
+                    if (idx + 2 >= pixelBuffer.Length) continue;
+                    
+                    int b = pixelBuffer[idx];
+                    int g = pixelBuffer[idx + 1];
+                    int r = pixelBuffer[idx + 2];
+                    int gray = (int)(0.299 * r + 0.587 * g + 0.114 * b);
+                    
+                    byte finalValue;
+                    if (gray > threshold)
+                    {
+                        finalValue = 255;
+                    }
+                    else
+                    {
+                        finalValue = 0;
+                    }
+                    
+                    pixelBuffer[idx] = finalValue;     // B
+                    pixelBuffer[idx + 1] = finalValue; // G
+                    pixelBuffer[idx + 2] = finalValue; // R
+                }
+            }
+
+            System.Runtime.InteropServices.Marshal.Copy(pixelBuffer, 0, scan0, bytes);
+            upscaled.UnlockBits(data);
+
+            return upscaled;
         }
         private static Rectangle GetRectangleFromPosition(Position position)
         {
@@ -463,21 +503,6 @@ namespace MultiClicker
             return capturedBitmap;
         }
 
-        private static TesseractEngine GetTesseractEngine()
-        {
-            if (_engine == null)
-            {
-                lock (tessEngineLock)
-                {
-                    if (_engine == null)
-                    {
-                        _engine = new TesseractEngine(tessdataPath, ocrLanguage, EngineMode.Default);
-                        _engine.SetVariable("tessedit_char_whitelist", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_[]");
-                    }
-                }
-            }
-            return _engine;
-        }
 
         public static Boolean IsRelatedHandle(IntPtr activeWindowHandle)
         {
@@ -487,40 +512,6 @@ namespace MultiClicker
                 return false;
             }
             return true;
-        }
-        private static void ReleasePressedKeys()
-        {
-            List<Keys> commonKeys = new List<Keys>
-            {
-                Keys.LShiftKey, Keys.RShiftKey, Keys.LControlKey, Keys.RControlKey,
-                Keys.LMenu, Keys.RMenu, Keys.Alt, Keys.Shift, Keys.Control
-            };
-
-            List<INPUT> inputs = new List<INPUT>();
-
-            foreach (var key in commonKeys)
-            {
-                if (HookManagement.keysPressed.Contains(key))
-                {
-                    inputs.Add(new INPUT
-                    {
-                        type = INPUT_KEYBOARD,
-                        u = new InputUnion
-                        {
-                            ki = new KEYBDINPUT
-                            {
-                                wVk = (ushort)key,
-                                dwFlags = KEYEVENTF_KEYUP
-                            }
-                        }
-                    });
-                }
-            }
-
-            if (inputs.Count > 0)
-            {
-                SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf(typeof(INPUT)));
-            }
         }
 
     }

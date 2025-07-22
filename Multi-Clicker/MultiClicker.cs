@@ -304,6 +304,14 @@ namespace MultiClicker
                     imageCache[imgPath] = File.Exists(imgPath) ? Image.FromFile(imgPath) : imageCache[defaultImagePath];
                 }
             }
+            foreach (var handleEntry in WindowManagement.windowHandles)
+            {
+                string characterName = handleEntry.Value.CharacterName;
+                if (!ConfigManagement.config.Panels.ContainsKey(characterName))
+                {
+                    ConfigManagement.config.Panels[characterName] = new PanelConfig { Background = defaultImagePath };
+                }
+            }
 
             flowLayoutPanel.SuspendLayout();
             flowLayoutPanel.Controls.Clear();
@@ -364,7 +372,7 @@ namespace MultiClicker
 
             this.ClientSize = new Size(width, height);
 
-            // (Optionnel) repositionne la fenêtre si besoin
+            // (Optional) reposition the window if needed
             this.Location = new Point(
                 Screen.PrimaryScreen.WorkingArea.Width - this.ClientSize.Width - (Screen.PrimaryScreen.WorkingArea.Width / 20),
                 0 + titleBar.Height + (Screen.PrimaryScreen.WorkingArea.Height / 10)

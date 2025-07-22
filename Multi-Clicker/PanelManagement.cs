@@ -74,7 +74,7 @@ namespace MultiClicker
             {
                 selectedPanel.IsSelected = false;
                 selectedPanel.Invalidate();
-                // Rétablir la couleur de fond
+                // Restore the background color
                 selectedPanel.BackColor = Color.Transparent;
             }
 
@@ -104,7 +104,7 @@ namespace MultiClicker
             WindowManagement.SetHandleToForeGround(handle);
         }
 
-        // Ajoutez cette méthode utilitaire dans PanelManagement
+        // Add this utility method in PanelManagement
         public static bool IsColorDark(Color color)
         {
             double luminance = (0.299 * color.R + 0.587 * color.G + 0.114 * color.B);
