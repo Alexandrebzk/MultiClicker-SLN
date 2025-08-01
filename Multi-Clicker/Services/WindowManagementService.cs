@@ -92,6 +92,7 @@ namespace MultiClicker.Services
         #region Constants
         private const uint INPUT_KEYBOARD = 1;
         private const uint KEYEVENTF_KEYUP = 0x0002;
+        private const uint KEYEVENTF_SCANCODE = 0x0008;
         #endregion
 
         #region Input Structures
@@ -213,13 +214,11 @@ namespace MultiClicker.Services
         {
             try
             {
-                // Check if window is minimized (legacy behavior)
                 if (IsIconic(handle))
                 {
                     ShowWindow(handle, Restore);
                 }
 
-                // Send ALT key events to bypass Windows restrictions (legacy behavior)
                 keybd_event((byte)ALT, 0x45, EXTENDEDKEY | 0, 0);
                 keybd_event((byte)ALT, 0x45, EXTENDEDKEY | KEYUP, 0);
 
@@ -303,7 +302,7 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
-        /// Simulates key press on the specified window - using SendInput for better compatibility
+        /// Simulates key press with special handling for TAB and ENTER keys using scan codes
         /// </summary>
         /// <param name="windowHandle">The target window handle</param>
         /// <param name="key">The key to press</param>
@@ -311,14 +310,23 @@ namespace MultiClicker.Services
         {
             try
             {
-                // Ensure the window is brought to foreground first
                 SetHandleToForeground(windowHandle);
-                Thread.Sleep(50); // Small delay to ensure focus is set
+                Thread.Sleep(25);
                 
-                // Create INPUT structures for key down and key up
+                if (key == Keys.Tab)
+                {
+                    SendTab(windowHandle);
+                    return;
+                }
+                
+                if (key == Keys.Enter || key == Keys.Return)
+                {
+                    SendEnter(windowHandle);
+                    return;
+                }
+                
                 INPUT[] inputs = new INPUT[2];
                 
-                // Key down
                 inputs[0] = new INPUT
                 {
                     type = INPUT_KEYBOARD,
@@ -327,12 +335,11 @@ namespace MultiClicker.Services
                         ki = new KEYBDINPUT
                         {
                             wVk = (ushort)key,
-                            dwFlags = 0 // Key down
+                            dwFlags = 0
                         }
                     }
                 };
                 
-                // Key up
                 inputs[1] = new INPUT
                 {
                     type = INPUT_KEYBOARD,
@@ -341,12 +348,11 @@ namespace MultiClicker.Services
                         ki = new KEYBDINPUT
                         {
                             wVk = (ushort)key,
-                            dwFlags = KEYEVENTF_KEYUP // Key up
+                            dwFlags = KEYEVENTF_KEYUP
                         }
                     }
                 };
                 
-                // Send the input
                 SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
             }
             catch (Exception ex)
@@ -364,12 +370,10 @@ namespace MultiClicker.Services
         public static void SimulateKeyPressListToWindow(IntPtr windowHandle, List<Keys> keys, int delay)
         {
             SetHandleToForeground(windowHandle);
-            Thread.Sleep(15);
+            Thread.Sleep(10);
 
-            // Create INPUT structures for all key presses
             List<INPUT> inputs = new List<INPUT>();
 
-            // Press all keys down first
             foreach (var key in keys)
             {
                 INPUT input = new INPUT();
@@ -377,13 +381,12 @@ namespace MultiClicker.Services
                 input.u.ki = new KEYBDINPUT();
                 input.u.ki.wVk = (ushort)key;
                 input.u.ki.wScan = 0;
-                input.u.ki.dwFlags = 0; // Key down
+                input.u.ki.dwFlags = 0;
                 input.u.ki.time = 0;
                 input.u.ki.dwExtraInfo = IntPtr.Zero;
                 inputs.Add(input);
             }
 
-            // Release all keys in reverse order
             for (int i = keys.Count - 1; i >= 0; i--)
             {
                 INPUT input = new INPUT();
@@ -391,19 +394,54 @@ namespace MultiClicker.Services
                 input.u.ki = new KEYBDINPUT();
                 input.u.ki.wVk = (ushort)keys[i];
                 input.u.ki.wScan = 0;
-                input.u.ki.dwFlags = KEYEVENTF_KEYUP; // Key up
+                input.u.ki.dwFlags = KEYEVENTF_KEYUP;
                 input.u.ki.time = 0;
                 input.u.ki.dwExtraInfo = IntPtr.Zero;
                 inputs.Add(input);
             }
 
-            // Send all inputs at once
             if (inputs.Count > 0)
             {
                 SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf(typeof(INPUT)));
             }
 
-            Thread.Sleep(15);
+            Thread.Sleep(10);
+        }
+
+        /// <summary>
+        /// Sends TAB key using keybd_event with scan codes
+        /// </summary>
+        /// <param name="windowHandle">The target window handle</param>
+        public static void SendTab(IntPtr windowHandle)
+        {
+            try
+            {
+                keybd_event((byte)Keys.Tab, 0x0F, 0, 0);
+                Thread.Sleep(5);
+                keybd_event((byte)Keys.Tab, 0x0F, KEYUP, 0);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error sending TAB key to window {windowHandle}: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Sends ENTER key using keybd_event with scan codes
+        /// </summary>
+        /// <param name="windowHandle">The target window handle</param>
+        public static void SendEnter(IntPtr windowHandle)
+        {
+            try
+            {
+                keybd_event((byte)Keys.Enter, 0x1C, 0, 0);
+                Thread.Sleep(5);
+                keybd_event((byte)Keys.Enter, 0x1C, KEYUP, 0);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error sending ENTER key to window {windowHandle}: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -418,21 +456,109 @@ namespace MultiClicker.Services
                 foreach (var windowEntry in targetWindows)
                 {
                     SetHandleToForeground(windowEntry.Key);
-                    Thread.Sleep(100);
-                    SimulateKeyPress(windowEntry.Key, Keys.Tab);
+                    SimulateKeyPress(windowEntry.Key, ConfigurationService.Current.Keybinds[TRIGGERS.DOFUS_OPEN_DISCUSSION]);
+                    Thread.Sleep(50);
 
                     foreach (char c in text)
                     {
                         Keys key;
                         bool needsShift = false;
                         
-                        // Handle special characters that VkKeyScan might not handle correctly
                         switch (c)
                         {
                             case '/':
-                                // For French keyboard layout, / is usually Shift + : key
-                                key = Keys.OemQuestion; // This maps to the : key
-                                needsShift = true; // Need Shift to get /
+                                key = Keys.OemQuestion;
+                                needsShift = true;
+                                break;
+                            case ' ':
+                                key = Keys.Space;
+                                break;
+                            default:
+                                var keyCode = VkKeyScan(c);
+                                if (keyCode == -1)
+                                {
+                                    Trace.WriteLine($"Warning: Could not convert character '{c}' to key code");
+                                    continue;
+                                }
+                                else
+                                {
+                                    key = (Keys)(keyCode & 0xFF);
+                                    needsShift = (keyCode & 0x100) != 0;
+                                }
+                                break;
+                        }
+                        
+                        if (needsShift)
+                        {
+                            SimulateKeyPressListToWindow(windowEntry.Key, new List<Keys> { Keys.LShiftKey, key }, 0);
+                        }
+                        else
+                        {
+                            SimulateKeyPress(windowEntry.Key, key);
+                        }
+                    }
+
+                    SendEnter(windowEntry.Key);
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error sending text to windows: {ex.Message}");
+            }
+        }
+
+        public static void GroupCharacters()
+        {
+            try
+            {
+                var selectedPanel = PanelManagementService.SelectedPanel;
+                if (selectedPanel == null)
+                {
+                    Trace.WriteLine("No panel selected for group characters");
+                    return;
+                }
+
+                var selectedWindow = WindowHandles.FirstOrDefault(w => w.Value.RelatedPanel == selectedPanel);
+                if (selectedWindow.Key == IntPtr.Zero)
+                {
+                    Trace.WriteLine("No window found for selected panel");
+                    return;
+                }
+
+                Trace.WriteLine($"Sending group invitations from SELECTED panel: {selectedWindow.Value.CharacterName}");
+
+                var otherWindows = WindowHandles.Where(w => w.Key != selectedWindow.Key).ToList();
+
+                SimulateKeyPress(selectedWindow.Key, ConfigurationService.Current.Keybinds[TRIGGERS.DOFUS_OPEN_DISCUSSION]);
+                Thread.Sleep(100);
+
+                foreach (var windowEntry in otherWindows)
+                {
+                    var windowInfo = windowEntry.Value;
+                    var characterName = windowInfo.CharacterName;
+
+                    if (string.IsNullOrEmpty(characterName))
+                    {
+                        Trace.WriteLine("Character name is empty, cannot send group characters command");
+                        continue;
+                    }
+
+                    Trace.WriteLine($"Sending group characters invitation for character: {characterName}");
+
+                    SetHandleToForeground(selectedWindow.Key);
+                    Thread.Sleep(50);
+
+                    var inviteCommand = $"/invite {characterName}";
+                    foreach (char c in inviteCommand)
+                    {
+                        Keys key;
+                        bool needsShift = false;
+
+                        switch (c)
+                        {
+                            case '/':
+                                key = Keys.OemQuestion;
+                                needsShift = true;
                                 break;
                             case ' ':
                                 key = Keys.Space;
@@ -451,27 +577,26 @@ namespace MultiClicker.Services
                                 }
                                 break;
                         }
-                        
-                        // If Shift is needed, simulate Shift+Key
+
                         if (needsShift)
                         {
-                            SimulateKeyPressListToWindow(windowEntry.Key, new List<Keys> { Keys.LShiftKey, key }, 0);
+                            SimulateKeyPressListToWindow(selectedWindow.Key, new List<Keys> { Keys.LShiftKey, key }, 0);
                         }
                         else
                         {
-                            SimulateKeyPress(windowEntry.Key, key);
+                            SimulateKeyPress(selectedWindow.Key, key);
                         }
-                        Thread.Sleep(15);
                     }
 
-                    // Send Enter key
-                    SimulateKeyPress(windowEntry.Key, Keys.Enter);
-                    Thread.Sleep(200);
+                    // Use optimized SendEnter function instead of SimulateKeyPress for better ENTER handling
+                    SendEnter(selectedWindow.Key);
+
+                    Trace.WriteLine($"Group characters invitation sent successfully for: {characterName}");
                 }
             }
             catch (Exception ex)
             {
-                Trace.WriteLine($"Error sending text to windows: {ex.Message}");
+                Trace.WriteLine($"Error in GroupCharacters: {ex.Message}");
             }
         }
         #endregion
@@ -676,8 +801,9 @@ namespace MultiClicker.Services
                 AmountToFill = int.Parse(AmountToFill.ToString().Trim());
 
                 Trace.WriteLine($"Amount to fill: {AmountToFill - 1}; current sell quantity: {ValuesMap[sellCurrentModeValue]}; recognized selling price: {AmountToFill}");
+                System.Threading.Thread.Sleep(100);
                 SendKeys.SendWait("^a");
-                System.Threading.Thread.Sleep(50);
+                System.Threading.Thread.Sleep(100);
                 SendKeys.SendWait("{DELETE}");
                 SendKeys.SendWait((AmountToFill - 1).ToString().Trim());
             }

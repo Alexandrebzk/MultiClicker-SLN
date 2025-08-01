@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using System.Threading;
 using System.Windows.Forms;
 using MultiClicker.Core;
 using MultiClicker.Models;
@@ -412,6 +413,7 @@ namespace MultiClicker.UI
 
         private void HandleTravelMenuRequest()
         {
+            Thread.Sleep(100);
             Invoke((MethodInvoker)delegate
             {
                 using (var inputForm = new ReplicateTextForm())
@@ -421,6 +423,13 @@ namespace MultiClicker.UI
                         var inputText = inputForm.InputText;
                         var windowList = WindowManagementService.WindowHandles.ToList();
                         WindowManagementService.SendTextToWindows(inputText, windowList);
+                        if (inputText.Contains("/travel"))
+                        {
+                            foreach (var windowEntry in windowList)
+                            {
+                                WindowManagementService.SimulateKeyPress(windowEntry.Key, Keys.Enter);
+                            }
+                        }
                     }
                 }
             });

@@ -47,6 +47,7 @@ namespace MultiClicker.Models
         SIMPLE_CLICK_NO_DELAY,
         DOFUS_HAVENBAG,
         DOFUS_OPEN_DISCUSSION,
+        GROUP_CHARACTERS,
     }
 
     /// <summary>
