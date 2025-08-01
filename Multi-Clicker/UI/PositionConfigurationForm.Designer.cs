@@ -1,6 +1,6 @@
 ﻿namespace MultiClicker
 {
-    partial class KeyBindForm
+    partial class PositionConfigurationForm
     {
         /// <summary>
         /// Required designer variable.

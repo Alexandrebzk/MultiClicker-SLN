@@ -30,6 +30,7 @@ namespace MultiClicker.Services
         private const int ClickOffset = 5;
         private const int TitleBarOffset = 4;
         private const int BinarizationThreshold = 140;
+        private const int MaxClickRetries = 3; // Maximum number of click retry attempts
         private static readonly string OcrLanguage = "fra";
         private static readonly string TessdataPath = @"tessdata";
         private static readonly object TessEngineLock = new object();
@@ -239,29 +240,38 @@ namespace MultiClicker.Services
         {
             try
             {
-                var delay = isNoDelay 
-                    ? Services.ConfigurationService.Current.General.FollowNoDelay
-                    : GetRandomDelay();
+                var delay = !isNoDelay ? GetRandomDelay() : 0;
 
-                Task.Run(() =>
+                // Use parallel execution for better performance while maintaining reliability
+                var tasks = new List<Task>();
+                
+                foreach (var windowEntry in WindowHandles.ToList()) // ToList to avoid collection modification issues
                 {
-                    foreach (var windowEntry in WindowHandles)
+                    try
                     {
-                        try
+                        if (!isNoDelay)
                         {
-                            if (!isNoDelay)
-                            {
-                                Thread.Sleep(delay);
-                            }
+                            Thread.Sleep(delay);
+                            PerformClickOnWindowWithRetry(windowEntry.Key, position);
+                        } else
+                        {
+                            Task.Run(() => PerformClickOnWindowWithRetry(windowEntry.Key, position));
 
-                            PerformClickOnWindow(windowEntry.Key, position);
-                        }
-                        catch (Exception ex)
-                        {
-                            Trace.WriteLine($"Error clicking on window {windowEntry.Value.WindowName}: {ex.Message}");
                         }
                     }
-                });
+                    catch (Exception ex)
+                    {
+                        Trace.WriteLine($"Error clicking on window {windowEntry.Value.WindowName}: {ex.Message}");
+                    }
+                }
+
+                Task.WhenAll(tasks).ContinueWith(t =>
+                {
+                    if (t.Exception != null)
+                    {
+                        Trace.WriteLine($"Some click operations failed: {t.Exception.Flatten().Message}");
+                    }
+                }, TaskContinuationOptions.OnlyOnFaulted);
             }
             catch (Exception ex)
             {
@@ -279,25 +289,66 @@ namespace MultiClicker.Services
             {
                 var delay = GetRandomDelay();
 
-                Task.Run(() =>
+                // Use parallel execution for better performance
+                var tasks = new List<Task>();
+                
+                foreach (var windowEntry in WindowHandles.ToList()) // ToList to avoid collection modification issues
                 {
-                    foreach (var windowEntry in WindowHandles)
+                    try
                     {
-                        try
-                        {
-                            Thread.Sleep(delay);
-                            PerformDoubleClickOnWindow(windowEntry.Key, position);
-                        }
-                        catch (Exception ex)
-                        {
-                            Trace.WriteLine($"Error double clicking on window {windowEntry.Value.WindowName}: {ex.Message}");
-                        }
+                        Task.Run(() => PerformDoubleClickOnWindowWithRetry(windowEntry.Key, position));
                     }
-                });
+                    catch (Exception ex)
+                    {
+                        Trace.WriteLine($"Error double clicking on window {windowEntry.Value.WindowName}: {ex.Message}");
+                    }
+                }
+
+                // Track completion for debugging
+                Task.WhenAll(tasks).ContinueWith(t =>
+                {
+                    if (t.Exception != null)
+                    {
+                        Trace.WriteLine($"Some double click operations failed: {t.Exception.Flatten().Message}");
+                    }
+                }, TaskContinuationOptions.OnlyOnFaulted);
             }
             catch (Exception ex)
             {
                 Trace.WriteLine($"Error performing window double click: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Simulates a key combination with modifiers
+        /// </summary>
+        /// <param name="windowHandle">The target window handle</param>
+        /// <param name="keyCombination">The key combination to simulate</param>
+        public static void SimulateKeyCombination(IntPtr windowHandle, KeyCombination keyCombination)
+        {
+            try
+            {
+                if (keyCombination.Key == Keys.None) return;
+
+                SetHandleToForeground(windowHandle);
+                Thread.Sleep(25);
+
+                var keys = new List<Keys>();
+                
+                // Add modifiers first
+                if (keyCombination.Control) keys.Add(Keys.LControlKey);
+                if (keyCombination.Shift) keys.Add(Keys.LShiftKey);
+                if (keyCombination.Alt) keys.Add(Keys.LMenu);
+                
+                // Add the main key
+                keys.Add(keyCombination.Key);
+
+                // Simulate the key combination
+                SimulateKeyPressListToWindow(windowHandle, keys, 0);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error simulating key combination for window {windowHandle}: {ex.Message}");
             }
         }
 
@@ -456,7 +507,8 @@ namespace MultiClicker.Services
                 foreach (var windowEntry in targetWindows)
                 {
                     SetHandleToForeground(windowEntry.Key);
-                    SimulateKeyPress(windowEntry.Key, ConfigurationService.Current.Keybinds[TRIGGERS.DOFUS_OPEN_DISCUSSION]);
+                    var discussionKeybind = ConfigurationService.Current.Keybinds[TRIGGERS.DOFUS_OPEN_DISCUSSION];
+                    SimulateKeyCombination(windowEntry.Key, discussionKeybind);
                     Thread.Sleep(50);
 
                     foreach (char c in text)
@@ -529,7 +581,8 @@ namespace MultiClicker.Services
 
                 var otherWindows = WindowHandles.Where(w => w.Key != selectedWindow.Key).ToList();
 
-                SimulateKeyPress(selectedWindow.Key, ConfigurationService.Current.Keybinds[TRIGGERS.DOFUS_OPEN_DISCUSSION]);
+                var discussionKeybind = ConfigurationService.Current.Keybinds[TRIGGERS.DOFUS_OPEN_DISCUSSION];
+                SimulateKeyCombination(selectedWindow.Key, discussionKeybind);
                 Thread.Sleep(100);
 
                 foreach (var windowEntry in otherWindows)
@@ -665,18 +718,56 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
-        /// Gets a random delay based on configuration
+        /// Gets a random delay based on configuration (optimized for faster response)
         /// </summary>
         /// <returns>Random delay in milliseconds</returns>
         private static int GetRandomDelay()
         {
             var config = Services.ConfigurationService.Current.General;
             var random = new Random();
-            return random.Next(config.MinimumFollowDelay, config.MaximumFollowDelay);
+            var minDelay = Math.Max(5, config.MinimumFollowDelay);
+            var maxDelay = Math.Max(minDelay + 5, config.MaximumFollowDelay);
+            return random.Next(minDelay, maxDelay);
         }
 
         /// <summary>
-        /// Performs a click operation on the specified window
+        /// Performs a click operation on the specified window with retry mechanism
+        /// </summary>
+        /// <param name="windowHandle">The target window handle</param>
+        /// <param name="position">The position to click</param>
+        private static void PerformClickOnWindowWithRetry(IntPtr windowHandle, POINT position)
+        {
+            for (int attempt = 0; attempt < MaxClickRetries; attempt++)
+            {
+                try
+                {
+                    if (!IsWindow(windowHandle))
+                    {
+                        Trace.WriteLine($"Window handle is no longer valid on attempt {attempt + 1}");
+                        break;
+                    }
+
+                    var lParam = MakeLParam(position.X, position.Y);
+                    
+                    var result1 = SendMessage(windowHandle, 0x0201, IntPtr.Zero, lParam); // WM_LBUTTONDOWN
+                    var result2 = SendMessage(windowHandle, 0x0202, IntPtr.Zero, lParam); // WM_LBUTTONUP
+
+                    if (result1 != IntPtr.Zero || result2 != IntPtr.Zero)
+                    {
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Click attempt {attempt + 1} failed: {ex.Message}");
+                    if (attempt == MaxClickRetries - 1)
+                        throw;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Performs a click operation on the specified window (legacy method for compatibility)
         /// </summary>
         /// <param name="windowHandle">The target window handle</param>
         /// <param name="position">The position to click</param>
@@ -696,7 +787,26 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
-        /// Performs a double click operation on the specified window
+        /// Performs a double click operation on the specified window with retry mechanism
+        /// </summary>
+        /// <param name="windowHandle">The target window handle</param>
+        /// <param name="position">The position to double click</param>
+        private static void PerformDoubleClickOnWindowWithRetry(IntPtr windowHandle, POINT position)
+        {
+            try
+            {
+                PerformClickOnWindowWithRetry(windowHandle, position);
+                Thread.Sleep(50);
+                PerformClickOnWindowWithRetry(windowHandle, position);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error performing double click with retry on window: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Performs a double click operation on the specified window (legacy method for compatibility)
         /// </summary>
         /// <param name="windowHandle">The target window handle</param>
         /// <param name="position">The position to double click</param>
@@ -803,7 +913,7 @@ namespace MultiClicker.Services
                 Trace.WriteLine($"Amount to fill: {AmountToFill - 1}; current sell quantity: {ValuesMap[sellCurrentModeValue]}; recognized selling price: {AmountToFill}");
                 System.Threading.Thread.Sleep(100);
                 SendKeys.SendWait("^a");
-                System.Threading.Thread.Sleep(100);
+                System.Threading.Thread.Sleep(200);
                 SendKeys.SendWait("{DELETE}");
                 SendKeys.SendWait((AmountToFill - 1).ToString().Trim());
             }

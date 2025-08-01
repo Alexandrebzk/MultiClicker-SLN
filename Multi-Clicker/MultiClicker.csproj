@@ -78,11 +78,11 @@
   <ItemGroup>
     <Compile Include="Constants.cs" />
     <Compile Include="FileTraceListener.cs" />
-    <Compile Include="KeyBindForm.cs">
+    <Compile Include="PositionConfigurationForm.cs">
       <SubType>Form</SubType>
     </Compile>
-    <Compile Include="KeyBindForm.Designer.cs">
-      <DependentUpon>KeyBindForm.cs</DependentUpon>
+    <Compile Include="PositionConfigurationForm.Designer.cs">
+      <DependentUpon>PositionConfigurationForm.cs</DependentUpon>
     </Compile>
     <Compile Include="PositionOverlayForm.cs">
       <SubType>Form</SubType>
@@ -106,6 +106,9 @@
     <Compile Include="Services\WindowManagementService.cs" />
     <Compile Include="Services\HookManagementService.cs" />
     <Compile Include="Services\PanelManagementService.cs" />
+    <Compile Include="UI\KeybindsConfigForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="UI\MultiClickerForm.cs">
       <SubType>Component</SubType>
     </Compile>

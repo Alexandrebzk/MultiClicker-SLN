@@ -9,10 +9,9 @@ using MultiClicker.Services;
 
 namespace MultiClicker
 {
-    public partial class KeyBindForm : Form
+    public partial class PositionConfigurationForm : Form
     {
         private PositionOverlayForm overlayForm;
-        private Button[] buttons;
         private static POINT? firstClick;
         private static TRIGGERS_POSITIONS currentTrigger;
         private TableLayoutPanel tableLayoutPanel;
@@ -31,7 +30,7 @@ namespace MultiClicker
             }
         }
         
-        public KeyBindForm()
+        public PositionConfigurationForm()
         {
             InitializeComponent();
             InitializeTableLayoutPanel();

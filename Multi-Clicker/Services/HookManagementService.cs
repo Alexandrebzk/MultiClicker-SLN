@@ -67,47 +67,32 @@ namespace MultiClicker.Services
         #endregion
 
         #region Private Fields
-        private static readonly Dictionary<TRIGGERS, Action<object>> KeyActions = new Dictionary<TRIGGERS, Action<object>>();
+        private static readonly Dictionary<TRIGGERS, (Action<object> action, bool hasCooldown)> KeyActions = new Dictionary<TRIGGERS, (Action<object>, bool)>();
         private static readonly HashSet<Keys> KeysPressed = new HashSet<Keys>();
+        private static readonly HashSet<MouseMessages> MouseButtonsPressed = new HashSet<MouseMessages>();
+        private static bool _xButton1Pressed = false;
+        private static bool _xButton2Pressed = false;
         private static readonly Random Random = new Random();
         private static POINT _cursorPosition;
+        private static readonly Dictionary<TRIGGERS, DateTime> _lastExecutionTime = new Dictionary<TRIGGERS, DateTime>();
+        private static readonly TimeSpan _executionCooldown = TimeSpan.FromMilliseconds(500); // 500ms cooldown
         #endregion
 
         #region Public Events
-        /// <summary>
-        /// Event raised when the travel menu should be opened
-        /// </summary>
         public static event Action ShouldOpenMenuTravel;
-
-        /// <summary>
-        /// Event raised when the key bind form should be opened
-        /// </summary>
-        public static event Action ShouldOpenKeyBindForm;
+        public static event Action ShouldOpenPositionConfiguration;
         #endregion
 
         #region Public Properties
-        /// <summary>
-        /// Gets the current cursor position
-        /// </summary>
         public static POINT CursorPosition => _cursorPosition;
         #endregion
 
         #region Public Methods
-        /// <summary>
-        /// Initializes the hook management service
-        /// </summary>
         public static void Initialize()
         {
             InitializeKeyActions();
         }
 
-        /// <summary>
-        /// Keyboard hook callback function
-        /// </summary>
-        /// <param name="nCode">Hook code</param>
-        /// <param name="wParam">wParam</param>
-        /// <param name="lParam">lParam</param>
-        /// <returns>Hook result</returns>
         public static IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
             if (nCode < 0 || !WindowManagementService.IsRelatedHandle(GetForegroundWindow()))
@@ -135,13 +120,6 @@ namespace MultiClicker.Services
             return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
         }
 
-        /// <summary>
-        /// Mouse hook callback function
-        /// </summary>
-        /// <param name="nCode">Hook code</param>
-        /// <param name="wParam">wParam</param>
-        /// <param name="lParam">lParam</param>
-        /// <returns>Hook result</returns>
         public static IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
             if (nCode < 0 || !WindowManagementService.IsRelatedHandle(GetForegroundWindow()))
@@ -169,23 +147,47 @@ namespace MultiClicker.Services
         #endregion
 
         #region Private Methods
-        /// <summary>
-        /// Initializes the key action mappings
-        /// </summary>
-        private static void InitializeKeyActions()
+        private static bool ExecuteWithCooldown(TRIGGERS trigger, Action<object> action)
         {
-            KeyActions[TRIGGERS.SELECT_NEXT] = obj => PanelManagementService.SelectNextPanel();
-            KeyActions[TRIGGERS.SELECT_PREVIOUS] = obj => PanelManagementService.SelectPreviousPanel();
-            KeyActions[TRIGGERS.SIMPLE_CLICK] = obj => WindowManagementService.PerformWindowClick(_cursorPosition, false);
-            KeyActions[TRIGGERS.SIMPLE_CLICK_NO_DELAY] = obj => WindowManagementService.PerformWindowClick(_cursorPosition, true);
-            KeyActions[TRIGGERS.DOUBLE_CLICK] = obj => WindowManagementService.PerformWindowDoubleClick(_cursorPosition);
-            KeyActions[TRIGGERS.GROUP_CHARACTERS] = obj => WindowManagementService.GroupCharacters();
+            var now = DateTime.Now;
+            
+            if (_lastExecutionTime.ContainsKey(trigger))
+            {
+                var timeSinceLastExecution = now - _lastExecutionTime[trigger];
+                if (timeSinceLastExecution < _executionCooldown)
+                {
+                    return false; // Still in cooldown period
+                }
+            }
+            
+            _lastExecutionTime[trigger] = now;
+            Task.Run(() => action(null));
+            return true;
         }
 
-        /// <summary>
-        /// Updates the state of modifier keys
-        /// </summary>
-        private static void UpdateModifierKeys()
+        private static void InitializeKeyActions()
+        {
+            KeyActions[TRIGGERS.SELECT_NEXT] = (obj => PanelManagementService.SelectNextPanel(), false);
+            KeyActions[TRIGGERS.SELECT_PREVIOUS] = (obj => PanelManagementService.SelectPreviousPanel(), false);
+            KeyActions[TRIGGERS.SIMPLE_CLICK] = (obj => WindowManagementService.PerformWindowClick(_cursorPosition, false), false);
+            KeyActions[TRIGGERS.SIMPLE_CLICK_NO_DELAY] = (obj => WindowManagementService.PerformWindowClick(_cursorPosition, true), false);
+            KeyActions[TRIGGERS.DOUBLE_CLICK] = (obj => WindowManagementService.PerformWindowDoubleClick(_cursorPosition), false);
+            KeyActions[TRIGGERS.GROUP_CHARACTERS] = (obj => WindowManagementService.GroupCharacters(), true);
+            KeyActions[TRIGGERS.TRAVEL] = (obj => ShouldOpenMenuTravel?.Invoke(), true);
+            KeyActions[TRIGGERS.OPTIONS] = (obj => ShouldOpenPositionConfiguration?.Invoke(), true);
+            KeyActions[TRIGGERS.PASTE_ON_ALL_WINDOWS] = (obj => HandlePasteOnAllWindows(), true);
+            KeyActions[TRIGGERS.FILL_HDV] = (obj =>
+            {
+                Trace.WriteLine("Starting price analysis");
+                Thread.Sleep(500);
+                WindowManagementService.FillSellPriceBasedOnForeGroundWindow();
+            }, true);
+        }
+
+/// <summary>
+/// Updates the state of modifier keys
+/// </summary>
+private static void UpdateModifierKeys()
         {
             var isAltPressed = (GetKeyState(0x12) & 0x8000) != 0;
             var isCtrlPressed = (GetKeyState(0x11) & 0x8000) != 0;
@@ -194,114 +196,159 @@ namespace MultiClicker.Services
             if (isCtrlPressed) KeysPressed.Add(Keys.LControlKey); else KeysPressed.Remove(Keys.LControlKey);
         }
 
-        /// <summary>
-        /// Handles key down events
-        /// </summary>
-        /// <param name="key">The pressed key</param>
+        private static bool IsKeyCombinationPressed(KeyCombination combination)
+        {
+            if (combination.IsEmpty) return false;
+
+            // Check keyboard modifiers and key
+            bool controlPressed = combination.Control && (KeysPressed.Contains(Keys.LControlKey) || KeysPressed.Contains(Keys.RControlKey));
+            bool shiftPressed = combination.Shift && (KeysPressed.Contains(Keys.LShiftKey) || KeysPressed.Contains(Keys.RShiftKey));
+            bool altPressed = combination.Alt && (KeysPressed.Contains(Keys.LMenu) || KeysPressed.Contains(Keys.RMenu));
+            bool keyPressed = combination.Key == Keys.None || KeysPressed.Contains(combination.Key);
+
+            // Check mouse buttons
+            bool leftMousePressed = !combination.LeftMouseButton || MouseButtonsPressed.Contains(MouseMessages.WM_LBUTTONDOWN);
+            bool rightMousePressed = !combination.RightMouseButton || MouseButtonsPressed.Contains(MouseMessages.WM_RBUTTONDOWN);
+            bool middleMousePressed = !combination.MiddleMouseButton || MouseButtonsPressed.Contains(MouseMessages.WM_MBUTTONDOWN);
+            bool xButton1Pressed = !combination.XButton1 || _xButton1Pressed;
+            bool xButton2Pressed = !combination.XButton2 || _xButton2Pressed;
+
+            // If no modifiers required, only check the key and mouse buttons
+            if (!combination.Control && !combination.Shift && !combination.Alt)
+            {
+                return keyPressed && leftMousePressed && rightMousePressed && middleMousePressed && xButton1Pressed && xButton2Pressed;
+            }
+
+            // Check that all required modifiers are pressed and no extra modifiers
+            bool controlMatch = combination.Control ? controlPressed : !KeysPressed.Contains(Keys.LControlKey) && !KeysPressed.Contains(Keys.RControlKey);
+            bool shiftMatch = combination.Shift ? shiftPressed : !KeysPressed.Contains(Keys.LShiftKey) && !KeysPressed.Contains(Keys.RShiftKey);
+            bool altMatch = combination.Alt ? altPressed : !KeysPressed.Contains(Keys.LMenu) && !KeysPressed.Contains(Keys.RMenu);
+
+            return keyPressed && controlMatch && shiftMatch && altMatch && leftMousePressed && rightMousePressed && middleMousePressed && xButton1Pressed && xButton2Pressed;
+        }
+
         private static void HandleKeyDown(Keys key)
         {
-            if (key == Keys.Oem7)
-            {
-                KeysPressed.Add(Keys.Oem7);
-            }
+            KeysPressed.Add(key);
 
-            if (KeysPressed.Add(key) && ConfigurationService.Current.Keybinds.Values.Contains(key))
+            // Check all keybind combinations (including those with mouse buttons)
+            foreach (var keybind in ConfigurationService.Current.Keybinds)
             {
-                var trigger = ConfigurationService.Current.Keybinds.First(kvp => kvp.Value == key).Key;
-                if (KeyActions.TryGetValue(trigger, out var action))
+                if (IsKeyCombinationPressed(keybind.Value))
                 {
-                    Task.Run(() => action(null));
+                    if (KeyActions.TryGetValue(keybind.Key, out var actionData))
+                    {
+                        if (actionData.hasCooldown)
+                        {
+                            if (ExecuteWithCooldown(keybind.Key, actionData.action))
+                            {
+                                return;
+                            }
+                        }
+                        else
+                        {
+                            // Execute directly without cooldown
+                            Task.Run(() => actionData.action(null));
+                            return;
+                        }
+                    }
                 }
-            }
-
-            // Handle Ctrl+Alt+V for paste on all windows
-            if (key == Keys.V && KeysPressed.Contains(Keys.Alt) && KeysPressed.Contains(Keys.LControlKey))
-            {
-                Task.Run(HandlePasteOnAllWindows);
             }
         }
 
-        /// <summary>
-        /// Handles key up events
-        /// </summary>
-        /// <param name="key">The released key</param>
         private static void HandleKeyUp(Keys key)
         {
             KeysPressed.Remove(key);
-
-            if (key == ConfigurationService.Current.Keybinds[TRIGGERS.TRAVEL])
-            {
-                ShouldOpenMenuTravel?.Invoke();
-            }
-
-            if (key == ConfigurationService.Current.Keybinds[TRIGGERS.OPTIONS])
-            {
-                ShouldOpenKeyBindForm?.Invoke();
-            }
         }
 
-        /// <summary>
-        /// Handles mouse messages
-        /// </summary>
-        /// <param name="message">The mouse message</param>
-        /// <param name="lParam">Message parameters</param>
         private static void HandleMouseMessage(MouseMessages message, IntPtr lParam)
         {
+            // Track mouse button states for combination checking
+            switch (message)
+            {
+                case MouseMessages.WM_LBUTTONDOWN:
+                    MouseButtonsPressed.Add(MouseMessages.WM_LBUTTONDOWN);
+                    break;
+                case MouseMessages.WM_LBUTTONUP:
+                    MouseButtonsPressed.Remove(MouseMessages.WM_LBUTTONDOWN);
+                    break;
+                case MouseMessages.WM_RBUTTONDOWN:
+                    MouseButtonsPressed.Add(MouseMessages.WM_RBUTTONDOWN);
+                    break;
+                case MouseMessages.WM_RBUTTONUP:
+                    MouseButtonsPressed.Remove(MouseMessages.WM_RBUTTONDOWN);
+                    break;
+                case MouseMessages.WM_MBUTTONDOWN:
+                    MouseButtonsPressed.Add(MouseMessages.WM_MBUTTONDOWN);
+                    break;
+                case MouseMessages.WM_MBUTTONUP:
+                    MouseButtonsPressed.Remove(MouseMessages.WM_MBUTTONDOWN);
+                    break;
+                case MouseMessages.WM_XBUTTONDOWN:
+                    HandleXButtonState(lParam, true);
+                    break;
+                case MouseMessages.WM_XBUTTONUP:
+                    HandleXButtonState(lParam, false);
+                    break;
+            }
+
+            // Check for keybind combinations that include mouse buttons
+            foreach (var keybind in ConfigurationService.Current.Keybinds)
+            {
+                if (keybind.Value.HasMouseButtons && IsKeyCombinationPressed(keybind.Value))
+                {
+                    if (KeyActions.TryGetValue(keybind.Key, out var actionData))
+                    {
+                        bool executed = false;
+                        if (actionData.hasCooldown)
+                        {
+                            executed = ExecuteWithCooldown(keybind.Key, actionData.action);
+                        }
+                        else
+                        {
+                            // Execute directly without cooldown
+                            Task.Run(() => actionData.action(null));
+                            executed = true;
+                        }
+                        
+                        if (executed)
+                        {
+                            return; // Only execute one action per event
+                        }
+                    }
+                }
+            }
+
+            // Handle original mouse events
             switch (message)
             {
                 case MouseMessages.WM_RBUTTONDOWN:
                     if (ConfigurationService.IsModifyingKeyBinds)
                     {
-                        KeyBindForm.choosePosition();
+                        PositionConfigurationForm.choosePosition();
                     }
-                    break;
-
-                case MouseMessages.WM_LBUTTONDOWN:
-                    if (KeysPressed.Contains(Keys.Oem7))
-                    {
-                        Task.Run(() =>
-                        {
-                            Trace.WriteLine("Starting price analysis");
-                            Thread.Sleep(500);
-                            WindowManagementService.FillSellPriceBasedOnForeGroundWindow();
-                            KeysPressed.Remove(Keys.Oem7);
-                        });
-                    }
-                    break;
-
-                case MouseMessages.WM_MBUTTONUP:
-                    Task.Run(() => WindowManagementService.PerformWindowDoubleClick(_cursorPosition));
-                    break;
-
-                case MouseMessages.WM_XBUTTONDOWN:
-                    HandleXButtonDown(lParam);
                     break;
             }
         }
 
-        /// <summary>
-        /// Handles X button mouse events
-        /// </summary>
-        /// <param name="lParam">Message parameters</param>
-        private static void HandleXButtonDown(IntPtr lParam)
+        private static void HandleXButtonState(IntPtr lParam, bool isPressed)
         {
             var hookStruct = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
             var xButton = (int)(hookStruct.mouseData >> 16);
 
-            Task.Run(() =>
+            if (xButton == 1)
             {
-                if (xButton == 1)
-                    WindowManagementService.PerformWindowClick(_cursorPosition, false);
-                else if (xButton == 2)
-                    WindowManagementService.PerformWindowClick(_cursorPosition, true);
-            });
+                _xButton1Pressed = isPressed;
+            }
+            else if (xButton == 2)
+            {
+                _xButton2Pressed = isPressed;
+            }
         }
 
-        /// <summary>
-        /// Handles paste on all windows action
-        /// </summary>
         private static void HandlePasteOnAllWindows()
         {
+            Thread.Sleep(500);
             var delay = Random.Next(
                 ConfigurationService.Current.General.MinimumFollowDelay,
                 ConfigurationService.Current.General.MaximumFollowDelay);

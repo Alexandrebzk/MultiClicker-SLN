@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Windows.Forms;
 using MultiClicker.Models;
 using Newtonsoft.Json;
@@ -94,13 +95,21 @@ namespace MultiClicker.Services
         /// <summary>
         /// Updates a specific keybind
         /// </summary>
-        public static void UpdateKeybind(TRIGGERS trigger, Keys key)
+        public static void UpdateKeybind(TRIGGERS trigger, KeyCombination keyCombination)
         {
             if (_config?.Keybinds != null)
             {
-                _config.Keybinds[trigger] = key;
+                _config.Keybinds[trigger] = keyCombination;
                 SaveConfig();
             }
+        }
+
+        /// <summary>
+        /// Updates a specific keybind using Keys (for backward compatibility)
+        /// </summary>
+        public static void UpdateKeybind(TRIGGERS trigger, Keys key)
+        {
+            UpdateKeybind(trigger, KeyCombination.FromKeys(key));
         }
 
         /// <summary>
@@ -123,7 +132,17 @@ namespace MultiClicker.Services
         private static void LoadFromFile()
         {
             var configContent = File.ReadAllText(ConfigFilePath);
-            _config = JsonConvert.DeserializeObject<Config>(configContent);
+            
+            try
+            {
+                _config = JsonConvert.DeserializeObject<Config>(configContent);
+                Trace.WriteLine("Configuration loaded successfully");
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error deserializing config, creating new one: {ex.Message}");
+                CreateDefaultConfig();
+            }
         }
 
         /// <summary>
@@ -137,8 +156,7 @@ namespace MultiClicker.Services
                 {
                     GameVersion = "3.0.45.37",
                     MinimumFollowDelay = 200,
-                    MaximumFollowDelay = 400,
-                    FollowNoDelay = 20
+                    MaximumFollowDelay = 400
                 },
                 Panels = new Dictionary<string, PanelConfig>(),
                 Positions = new Dictionary<TRIGGERS_POSITIONS, Position>(),
@@ -149,20 +167,22 @@ namespace MultiClicker.Services
         /// <summary>
         /// Gets default keybind configuration
         /// </summary>
-        private static Dictionary<TRIGGERS, Keys> GetDefaultKeybinds()
+        private static Dictionary<TRIGGERS, KeyCombination> GetDefaultKeybinds()
         {
-            return new Dictionary<TRIGGERS, Keys>
+            return new Dictionary<TRIGGERS, KeyCombination>
             {
-                { TRIGGERS.SELECT_NEXT, Keys.F1 },
-                { TRIGGERS.SELECT_PREVIOUS, Keys.F2 },
-                { TRIGGERS.SIMPLE_CLICK, Keys.XButton1 },
-                { TRIGGERS.DOUBLE_CLICK, Keys.XButton2 },
-                { TRIGGERS.SIMPLE_CLICK_NO_DELAY, Keys.MButton },
-                { TRIGGERS.DOFUS_HAVENBAG, Keys.H },
-                { TRIGGERS.DOFUS_OPEN_DISCUSSION, Keys.Tab },
-                { TRIGGERS.GROUP_CHARACTERS, Keys.F5 },
-                { TRIGGERS.TRAVEL, Keys.F6 },
-                { TRIGGERS.OPTIONS, Keys.F12 }
+                { TRIGGERS.SELECT_NEXT, new KeyCombination(Keys.F1) },
+                { TRIGGERS.SELECT_PREVIOUS, new KeyCombination(Keys.F2) },
+                { TRIGGERS.SIMPLE_CLICK, new KeyCombination(Keys.XButton1) },
+                { TRIGGERS.DOUBLE_CLICK, new KeyCombination(Keys.XButton2) },
+                { TRIGGERS.SIMPLE_CLICK_NO_DELAY, new KeyCombination(Keys.MButton) },
+                { TRIGGERS.DOFUS_HAVENBAG, new KeyCombination(Keys.H) },
+                { TRIGGERS.DOFUS_OPEN_DISCUSSION, new KeyCombination(Keys.Tab) },
+                { TRIGGERS.GROUP_CHARACTERS, new KeyCombination(Keys.F5) },
+                { TRIGGERS.TRAVEL, new KeyCombination(Keys.F6) },
+                { TRIGGERS.OPTIONS, new KeyCombination(Keys.F12) },
+                { TRIGGERS.FILL_HDV, new KeyCombination(Keys.Oem7, false, false, false, true, false, false, false, false) },
+                { TRIGGERS.PASTE_ON_ALL_WINDOWS, new KeyCombination(Keys.V, true, false, true, false, false, false, false, false) }
             };
         }
 
@@ -175,6 +195,10 @@ namespace MultiClicker.Services
             if (_config.Keybinds == null || _config.Keybinds.Count == 0)
             {
                 _config.Keybinds = GetDefaultKeybinds();
+            }
+            else
+            {
+                ValidateKeybinds();
             }
 
             // Ensure positions exist
@@ -194,8 +218,7 @@ namespace MultiClicker.Services
                 {
                     GameVersion = "3.0.45.37",
                     MinimumFollowDelay = 200,
-                    MaximumFollowDelay = 400,
-                    FollowNoDelay = 20
+                    MaximumFollowDelay = 400
                 };
             }
 
@@ -203,6 +226,22 @@ namespace MultiClicker.Services
             if (_config.Panels == null)
             {
                 _config.Panels = new Dictionary<string, PanelConfig>();
+            }
+        }
+
+        /// <summary>
+        /// Validates and adds missing keybind entries
+        /// </summary>
+        private static void ValidateKeybinds()
+        {
+            var defaultKeybinds = GetDefaultKeybinds();
+            
+            foreach (var defaultKeybind in defaultKeybinds)
+            {
+                if (!_config.Keybinds.ContainsKey(defaultKeybind.Key))
+                {
+                    _config.Keybinds.Add(defaultKeybind.Key, defaultKeybind.Value);
+                }
             }
         }
 
