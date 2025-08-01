@@ -43,6 +43,9 @@ namespace MultiClicker
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 
+                // Initialize localization system
+                LocalizationService.Initialize();
+                
                 // Set up global exception handling
                 AppDomain.CurrentDomain.UnhandledException += ApplicationManager.Instance.HandleUnhandledException;
                 Application.ApplicationExit += (s, e) => Cleanup();

@@ -1,0 +1,312 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <!-- 
+    Microsoft ResX Schema 
+    
+    Version 2.0
+    
+    The primary goals of this format is to allow a simple XML format 
+    that is mostly human readable. The generation and parsing of the 
+    various data types are done through the TypeConverter classes 
+    associated with the data types.
+    
+    Example:
+    
+    ... ado.net/XML headers & schema ...
+    <resheader name="resmimetype">text/microsoft-resx</resheader>
+    <resheader name="version">2.0</resheader>
+    <resheader name="reader">System.Resources.ResXResourceReader, System.Windows.Forms, ...</resheader>
+    <resheader name="writer">System.Resources.ResXResourceWriter, System.Windows.Forms, ...</resheader>
+    <data name="Name1"><value>this is my long string</value><comment>this is a comment</comment></data>
+    <data name="Color1" type="System.Drawing.Color, System.Drawing">Blue</data>
+    <data name="Bitmap1" mimetype="application/x-microsoft.net.object.binary.base64">
+        <value>[base64 mime encoded serialized .NET Framework object]</value>
+    </data>
+    <data name="Icon1" type="System.Drawing.Icon, System.Drawing" mimetype="application/x-microsoft.net.object.bytearray.base64">
+        <value>[base64 mime encoded string representing a byte array form of the .NET Framework object]</value>
+        <comment>This is a comment</comment>
+    </data>
+                
+    There are any number of "resheader" rows that contain simple 
+    name/value pairs.
+    
+    Each data row contains a name, and value. The row also contains a 
+    type or mimetype. Type corresponds to a .NET class that support 
+    text/value conversion through the TypeConverter architecture. 
+    Classes that don't support this are serialized and stored with the 
+    mimetype set.
+    
+    The mimetype is used for serialized objects, and tells the 
+    ResXResourceReader how to depersist the object. This is currently not 
+    extensible. For a given mimetype the value must be set accordingly:
+    
+    Note - application/x-microsoft.net.object.binary.base64 is the format 
+    that the ResXResourceWriter will generate, however the reader can 
+    read any of the formats listed below.
+    
+    mimetype: application/x-microsoft.net.object.binary.base64
+    value   : The object must be serialized with 
+            : System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
+            : and then encoded with base64 encoding.
+    
+    mimetype: application/x-microsoft.net.object.soap.base64
+    value   : The object must be serialized with 
+            : System.Runtime.Serialization.Formatters.Soap.SoapFormatter
+            : and then encoded with base64 encoding.
+
+    mimetype: application/x-microsoft.net.object.bytearray.base64
+    value   : The object must be serialized into a byte array 
+            : using a System.ComponentModel.TypeConverter
+            : and then encoded with base64 encoding.
+    -->
+  <xsd:schema id="root" xmlns="" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:msdata="urn:schemas-microsoft-com:xml-msdata">
+    <xsd:import namespace="http://www.w3.org/XML/1998/namespace" />
+    <xsd:element name="root" msdata:IsDataSet="true">
+      <xsd:complexType>
+        <xsd:choice maxOccurs="unbounded">
+          <xsd:element name="metadata">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" />
+              </xsd:sequence>
+              <xsd:attribute name="name" use="required" type="xsd:string" />
+              <xsd:attribute name="type" type="xsd:string" />
+              <xsd:attribute name="mimetype" type="xsd:string" />
+              <xsd:attribute ref="xml:space" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="assembly">
+            <xsd:complexType>
+              <xsd:attribute name="alias" type="xsd:string" />
+              <xsd:attribute name="name" type="xsd:string" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="data">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+                <xsd:element name="comment" type="xsd:string" minOccurs="0" msdata:Ordinal="2" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" msdata:Ordinal="1" />
+              <xsd:attribute name="type" type="xsd:string" msdata:Ordinal="3" />
+              <xsd:attribute name="mimetype" type="xsd:string" msdata:Ordinal="4" />
+              <xsd:attribute ref="xml:space" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="resheader">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" />
+            </xsd:complexType>
+          </xsd:element>
+        </xsd:choice>
+      </xsd:complexType>
+    </xsd:element>
+  </xsd:schema>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="AppTitle" xml:space="preserve">
+    <value>MultiClicker</value>
+  </data>
+  <data name="CloseButton" xml:space="preserve">
+    <value>X</value>
+  </data>
+  <data name="HelpButton" xml:space="preserve">
+    <value>?</value>
+  </data>
+  <data name="Help" xml:space="preserve">
+    <value>Aide</value>
+  </data>
+  <data name="Keybinds" xml:space="preserve">
+    <value>Raccourcis</value>
+  </data>
+  <data name="KeybindsButton" xml:space="preserve">
+    <value>⌨</value>
+  </data>
+  <data name="KeybindsTooltip" xml:space="preserve">
+    <value>Configuration des raccourcis clavier</value>
+  </data>
+  <data name="ErrorOpeningKeybinds" xml:space="preserve">
+    <value>Erreur lors de l'ouverture de la configuration des raccourcis: {0}</value>
+  </data>
+  <data name="ErrorTitle" xml:space="preserve">
+    <value>Erreur</value>
+  </data>
+  <data name="KeybindsFormTitle" xml:space="preserve">
+    <value>Configuration des Raccourcis Clavier</value>
+  </data>
+  <data name="KeybindsInstructions" xml:space="preserve">
+    <value>Cliquez sur un champ puis appuyez sur les touches et/ou cliquez avec la souris (gauche, droite, milieu, X1, X2) pour définir le raccourci. Le clic initial n'est pas enregistré.</value>
+  </data>
+  <data name="ActionColumn" xml:space="preserve">
+    <value>Action</value>
+  </data>
+  <data name="ShortcutColumn" xml:space="preserve">
+    <value>Raccourci</value>
+  </data>
+  <data name="ClearColumn" xml:space="preserve">
+    <value>Effacer</value>
+  </data>
+  <data name="ClearButton" xml:space="preserve">
+    <value>✖</value>
+  </data>
+  <data name="PressKeysPrompt" xml:space="preserve">
+    <value>Appuyez sur les touches et/ou cliquez...</value>
+  </data>
+  <data name="ReadyToCapture" xml:space="preserve">
+    <value>Prêt à capturer...</value>
+  </data>
+  <data name="SaveButton" xml:space="preserve">
+    <value>Sauvegarder</value>
+  </data>
+  <data name="CancelButton" xml:space="preserve">
+    <value>Annuler</value>
+  </data>
+  <data name="ResetButton" xml:space="preserve">
+    <value>Réinitialiser</value>
+  </data>
+  <data name="ConfigSavedSuccessfully" xml:space="preserve">
+    <value>Configuration sauvegardée avec succès!</value>
+  </data>
+  <data name="SuccessTitle" xml:space="preserve">
+    <value>Succès</value>
+  </data>
+  <data name="ResetConfirmation" xml:space="preserve">
+    <value>Êtes-vous sûr de vouloir réinitialiser tous les raccourcis ?</value>
+  </data>
+  <data name="ConfirmationTitle" xml:space="preserve">
+    <value>Confirmation</value>
+  </data>
+  <data name="TriggerNameColumn" xml:space="preserve">
+    <value>Nom du Déclencheur</value>
+  </data>
+  <data name="PositionColumn" xml:space="preserve">
+    <value>Position</value>
+  </data>
+  <data name="UpdateColumn" xml:space="preserve">
+    <value>Mettre à jour</value>
+  </data>
+  <data name="ColorColumn" xml:space="preserve">
+    <value>Couleur</value>
+  </data>
+  <data name="UpdateButton" xml:space="preserve">
+    <value>Mettre à jour</value>
+  </data>
+  <data name="SELECT_NEXT" xml:space="preserve">
+    <value>Sélectionner le Personnage Suivant</value>
+  </data>
+  <data name="SELECT_PREVIOUS" xml:space="preserve">
+    <value>Sélectionner le Personnage Précédent</value>
+  </data>
+  <data name="SIMPLE_CLICK" xml:space="preserve">
+    <value>Clic Simple</value>
+  </data>
+  <data name="DOUBLE_CLICK" xml:space="preserve">
+    <value>Double-Clic (Sans Délai)</value>
+  </data>
+  <data name="SIMPLE_CLICK_NO_DELAY" xml:space="preserve">
+    <value>Clic Simple (Sans Délai)</value>
+  </data>
+  <data name="DOFUS_HAVENBAG" xml:space="preserve">
+    <value>Dofus Havresac</value>
+  </data>
+  <data name="DOFUS_OPEN_DISCUSSION" xml:space="preserve">
+    <value>Dofus Ouvrir Discussion</value>
+  </data>
+  <data name="GROUP_CHARACTERS" xml:space="preserve">
+    <value>Grouper les Personnages</value>
+  </data>
+  <data name="TRAVEL" xml:space="preserve">
+    <value>Voyager</value>
+  </data>
+  <data name="OPTIONS" xml:space="preserve">
+    <value>Options</value>
+  </data>
+  <data name="FILL_HDV" xml:space="preserve">
+    <value>Remplir HDV</value>
+  </data>
+  <data name="MoveUp" xml:space="preserve">
+    <value>Déplacer vers le Haut</value>
+  </data>
+  <data name="MoveDown" xml:space="preserve">
+    <value>Déplacer vers le Bas</value>
+  </data>
+  <data name="ChangeBackground" xml:space="preserve">
+    <value>Changer l'Arrière-plan</value>
+  </data>
+  <data name="SelectBackgroundImage" xml:space="preserve">
+    <value>Sélectionner une Image d'Arrière-plan</value>
+  </data>
+  <data name="ImageFiles" xml:space="preserve">
+    <value>Fichiers Image</value>
+  </data>
+  <data name="LanguageChanged" xml:space="preserve">
+    <value>Langue changée avec succès. Veuillez redémarrer l'application pour que tous les changements prennent effet.</value>
+  </data>
+  <data name="Language" xml:space="preserve">
+    <value>Langue</value>
+  </data>
+  <data name="English" xml:space="preserve">
+    <value>English</value>
+  </data>
+  <data name="French" xml:space="preserve">
+    <value>Français</value>
+  </data>
+  <data name="Spanish" xml:space="preserve">
+    <value>Español</value>
+  </data>
+  <data name="ClickWithDelay" xml:space="preserve">
+    <value>CLIC avec délai</value>
+  </data>
+  <data name="ClickWithoutDelay" xml:space="preserve">
+    <value>Clic sans délai</value>
+  </data>
+  <data name="NextCharacter" xml:space="preserve">
+    <value>Personnage suivant</value>
+  </data>
+  <data name="PreviousCharacter" xml:space="preserve">
+    <value>Personnage précédent</value>
+  </data>
+  <data name="InputChatCommands" xml:space="preserve">
+    <value>Commandes de chat (Dofus Ouvrir discussion --&gt; Tab)</value>
+  </data>
+  <data name="AutoCompleteHDV" xml:space="preserve">
+    <value>Auto complétion HDV (voir config position) --&gt;</value>
+  </data>
+  <data name="PositionsConfig" xml:space="preserve">
+    <value>Config des positions</value>
+  </data>
+  <data name="FunctionBind" xml:space="preserve">
+    <value>FONCTION ----&gt; Raccourci</value>
+  </data>
+  <data name="PasteOnAllWindows" xml:space="preserve">
+    <value>Coller sur toutes les fenêtres</value>
+  </data>
+  <data name="Validate" xml:space="preserve">
+    <value>Valider</value>
+  </data>
+  <data name="Menu" xml:space="preserve">
+    <value>Menu</value>
+  </data>
+  <data name="KeyCombinationInstruction" xml:space="preserve">
+    <value> (Entrée pour confirmer, Échap pour annuler)</value>
+  </data>
+  <data name="AllFiles" xml:space="preserve">
+    <value>Tous les fichiers (*.*)</value>
+  </data>
+  <data name="PASTE_ON_ALL_WINDOWS" xml:space="preserve">
+    <value>Coller sur Toutes les Fenêtres</value>
+  </data>
+</root>

@@ -78,16 +78,16 @@
   <ItemGroup>
     <Compile Include="Constants.cs" />
     <Compile Include="FileTraceListener.cs" />
-    <Compile Include="PositionConfigurationForm.cs">
+    <Compile Include="UI\PositionConfigurationForm.cs">
       <SubType>Form</SubType>
     </Compile>
-    <Compile Include="PositionConfigurationForm.Designer.cs">
+    <Compile Include="UI\PositionConfigurationForm.Designer.cs">
       <DependentUpon>PositionConfigurationForm.cs</DependentUpon>
     </Compile>
-    <Compile Include="PositionOverlayForm.cs">
+    <Compile Include="UI\PositionOverlayForm.cs">
       <SubType>Form</SubType>
     </Compile>
-    <Compile Include="PositionOverlayForm.Designer.cs">
+    <Compile Include="UI\PositionOverlayForm.Designer.cs">
       <DependentUpon>PositionOverlayForm.cs</DependentUpon>
     </Compile>
     <Compile Include="Program.cs" />
@@ -102,6 +102,7 @@
     <Compile Include="Core\EventHandler.cs" />
     <Compile Include="Models\ConfigModels.cs" />
     <Compile Include="Services\ConfigurationService.cs" />
+    <Compile Include="Services\LocalizationService.cs" />
     <Compile Include="Services\OCRService.cs" />
     <Compile Include="Services\WindowManagementService.cs" />
     <Compile Include="Services\HookManagementService.cs" />
@@ -121,9 +122,27 @@
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
       <SubType>Designer</SubType>
     </EmbeddedResource>
+    <EmbeddedResource Include="Properties\Strings.resx">
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Strings.Designer.cs</LastGenOutput>
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Properties\Strings.fr.resx">
+      <DependentUpon>Strings.resx</DependentUpon>
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Properties\Strings.es.resx">
+      <DependentUpon>Strings.resx</DependentUpon>
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
     <Compile Include="Properties\Resources.Designer.cs">
       <AutoGen>True</AutoGen>
       <DependentUpon>Resources.resx</DependentUpon>
+      <DesignTime>True</DesignTime>
+    </Compile>
+    <Compile Include="Properties\Strings.Designer.cs">
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Strings.resx</DependentUpon>
       <DesignTime>True</DesignTime>
     </Compile>
     <None Include="packages.config" />

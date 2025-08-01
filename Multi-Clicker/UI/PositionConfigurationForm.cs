@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Windows.Forms;
 using MultiClicker.Models;
 using MultiClicker.Services;
+using MultiClicker.Properties;
 
 namespace MultiClicker
 {
@@ -80,10 +81,10 @@ namespace MultiClicker
             tableLayoutPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20F));
             tableLayoutPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20F));
 
-            AddCell(new Label { Text = "Trigger Name", TextAlign = ContentAlignment.MiddleCenter }, 0, 0);
-            AddCell(new Label { Text = "Position", TextAlign = ContentAlignment.MiddleCenter }, 1, 0);
-            AddCell(new Label { Text = "Update", TextAlign = ContentAlignment.MiddleCenter }, 2, 0);
-            AddCell(new Label { Text = "Color", TextAlign = ContentAlignment.MiddleCenter }, 3, 0);
+            AddCell(new Label { Text = Strings.TriggerNameColumn, TextAlign = ContentAlignment.MiddleCenter }, 0, 0);
+            AddCell(new Label { Text = Strings.PositionColumn, TextAlign = ContentAlignment.MiddleCenter }, 1, 0);
+            AddCell(new Label { Text = Strings.UpdateColumn, TextAlign = ContentAlignment.MiddleCenter }, 2, 0);
+            AddCell(new Label { Text = Strings.ColorColumn, TextAlign = ContentAlignment.MiddleCenter }, 3, 0);
 
             Random rand = new Random();
             int rowIndex = 1;
@@ -93,7 +94,7 @@ namespace MultiClicker
                 AddCell(new Label { Text = trigger.ToString(), TextAlign = ContentAlignment.MiddleCenter }, 0, rowIndex);
                 AddCell(new Label { Text = $"X: {position.X}, Y: {position.Y}, W: {position.Width}, H: {position.Height}", TextAlign = ContentAlignment.MiddleCenter }, 1, rowIndex);
 
-                Button updateButton = new Button { Text = "Update" };
+                Button updateButton = new Button { Text = Strings.UpdateButton };
                 updateButton.Click += (sender, e) => UpdateButton_Click(trigger);
                 AddCell(updateButton, 2, rowIndex);
 
