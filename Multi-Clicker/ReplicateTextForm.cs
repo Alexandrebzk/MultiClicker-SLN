@@ -1,6 +1,7 @@
 ﻿using System.Drawing;
 using System.Windows.Forms;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement;
+using MultiClicker.Properties;
 
 namespace MultiClicker
 {
@@ -13,6 +14,7 @@ namespace MultiClicker
         public ReplicateTextForm()
         {
             InitializeComponent();
+            this.Text = Strings.Menu;
             this.Shown += (sender, e) => this.Activate();
             textBox = new System.Windows.Forms.TextBox
             {
@@ -24,7 +26,7 @@ namespace MultiClicker
             button = new System.Windows.Forms.Button
             {
                 Location = new Point(10, 40),
-                Text = "Validate",
+                Text = Strings.Validate,
                 DialogResult = DialogResult.OK
             };
             button.Click += (sender, e) => this.Close();

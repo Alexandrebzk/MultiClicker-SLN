@@ -7,6 +7,7 @@ using System.Windows.Forms;
 using MultiClicker.Core;
 using MultiClicker.Models;
 using MultiClicker.Services;
+using MultiClicker.Properties;
 
 namespace MultiClicker.UI
 {
@@ -42,6 +43,7 @@ namespace MultiClicker.UI
         private readonly FlowLayoutPanel _flowLayoutPanel;
         private readonly OpenFileDialog _openFileDialog;
         private readonly ContextMenuStrip _contextMenu;
+        private readonly ContextMenuStrip _titleBarMenu;
         private bool _isDragging;
         private Point _dragStartPoint;
         private readonly Dictionary<string, Image> _imageCache;
@@ -54,6 +56,7 @@ namespace MultiClicker.UI
             
             _imageCache = new Dictionary<string, Image>();
             _titleBar = CreateTitleBar();
+            _titleBarMenu = CreateTitleBarMenu();
             _flowLayoutPanel = CreateFlowLayoutPanel();
             _openFileDialog = CreateOpenFileDialog();
             _contextMenu = CreateContextMenu();
@@ -112,82 +115,159 @@ namespace MultiClicker.UI
                 BackColor = ColorTranslator.FromHtml("#3a3b3b")
             };
 
+            // Close button (on the right)
             var closeButton = new Button
             {
-                Text = "X",
+                Text = "✕",
                 Dock = DockStyle.Right,
-                Width = 30,
+                Width = 40,
                 Height = 30,
-                BackColor = Color.Red,
+                BackColor = Color.FromArgb(232, 17, 35),
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
-                FlatAppearance = { BorderSize = 0 }
+                FlatAppearance = { BorderSize = 0 },
+                Font = new Font("Segoe UI", 10F, FontStyle.Bold)
+            };
+            closeButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(255, 50, 50);
+            closeButton.Click += (s, e) => Close();
+
+            // Menu button (on the left)
+            var menuButton = new Button
+            {
+                Text = "☰",
+                Dock = DockStyle.Left,
+                Width = 40,
+                Height = 30,
+                BackColor = Color.FromArgb(70, 130, 180),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                FlatAppearance = { BorderSize = 0 },
+                Font = new Font("Segoe UI", 12F, FontStyle.Bold)
+            };
+            menuButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(100, 150, 200);
+            menuButton.Click += MenuButton_Click;
+
+            // Application title in the center
+            var titleLabel = new Label
+            {
+                Text = "MultiClicker",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 10F, FontStyle.Bold),
+                BackColor = Color.Transparent
             };
 
-            var helpButton = CreateHelpButton();
-            var keybindsButton = CreateKeybindsButton();
-
-            closeButton.Click += (s, e) => Close();
+            titleBar.Controls.Add(titleLabel);
             titleBar.Controls.Add(closeButton);
-            titleBar.Controls.Add(helpButton);
-            titleBar.Controls.Add(keybindsButton);
+            titleBar.Controls.Add(menuButton);
 
             return titleBar;
         }
 
-        private Button CreateHelpButton()
+        private ContextMenuStrip CreateTitleBarMenu()
         {
-            var helpButton = new Button
+            var menu = new ContextMenuStrip
             {
-                Text = "?",
-                Dock = DockStyle.Left,
-                Width = 30,
-                Height = 30,
-                BackColor = Color.Violet,
+                BackColor = Color.FromArgb(45, 45, 48),
                 ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                FlatAppearance = { BorderSize = 0 }
+                Font = new Font("Segoe UI", 9F),
+                ShowImageMargin = true,
+                Renderer = new CustomMenuRenderer()
             };
 
-            var toolTip = new ToolTip
+            // Keybinds menu item
+            var keybindsItem = new ToolStripMenuItem
             {
-                InitialDelay = 10,
-                ReshowDelay = 500,
-                ShowAlways = true
+                Text = Strings.Keybinds,
+                Image = CreateMenuIcon("⌨", Color.DarkBlue),
+                ForeColor = Color.White
             };
+            keybindsItem.Click += (s, e) => OpenKeybindsConfiguration();
 
-            var tooltipText = GenerateTooltipText();
-            toolTip.SetToolTip(helpButton, tooltipText);
+            // Language menu item
+            var languageItem = new ToolStripMenuItem
+            {
+                Text = Strings.Language,
+                Image = CreateMenuIcon("🌐", Color.DarkGreen),
+                ForeColor = Color.White
+            };
+            languageItem.Click += (s, e) => ShowLanguageSelection();
 
-            return helpButton;
+            menu.Items.AddRange(new ToolStripItem[] { keybindsItem, languageItem });
+
+            return menu;
         }
 
-        private Button CreateKeybindsButton()
+        private void MenuButton_Click(object sender, EventArgs e)
         {
-            var keybindsButton = new Button
+            var button = sender as Button;
+            if (button != null)
             {
-                Text = "⌨",
-                Dock = DockStyle.Left,
-                Width = 30,
-                Height = 30,
-                BackColor = Color.DarkBlue,
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                FlatAppearance = { BorderSize = 0 }
-            };
+                _titleBarMenu.Show(button, new Point(0, button.Height));
+            }
+        }
 
-            var toolTip = new ToolTip
+        private Bitmap CreateMenuIcon(string text, Color color)
+        {
+            var bitmap = new Bitmap(16, 16);
+            using (var g = Graphics.FromImage(bitmap))
             {
-                InitialDelay = 10,
-                ReshowDelay = 500,
-                ShowAlways = true
-            };
+                g.Clear(Color.Transparent);
+                using (var brush = new SolidBrush(color))
+                using (var font = new Font("Segoe UI", 10F, FontStyle.Bold))
+                {
+                    var format = new StringFormat
+                    {
+                        Alignment = StringAlignment.Center,
+                        LineAlignment = StringAlignment.Center
+                    };
+                    g.DrawString(text, font, brush, new RectangleF(0, 0, 16, 16), format);
+                }
+            }
+            return bitmap;
+        }
 
-            toolTip.SetToolTip(keybindsButton, "Configuration des raccourcis clavier");
+        private void ShowLanguageSelection()
+        {
+            if (LocalizationService.ShowLanguageSelectionDialog(this))
+            {
+                MessageBox.Show(Strings.LanguageChanged, Strings.Language, 
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
 
-            keybindsButton.Click += (s, e) => OpenKeybindsConfiguration();
+        // Custom renderer for modern dark menu styling
+        private class CustomMenuRenderer : ToolStripProfessionalRenderer
+        {
+            public CustomMenuRenderer() : base(new CustomColorTable()) { }
 
-            return keybindsButton;
+            protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+            {
+                if (e.Item.Selected)
+                {
+                    var rect = new Rectangle(Point.Empty, e.Item.Size);
+                    using (var brush = new SolidBrush(Color.FromArgb(70, 130, 180)))
+                    {
+                        e.Graphics.FillRectangle(brush, rect);
+                    }
+                }
+            }
+
+            protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+            {
+                e.TextColor = Color.White;
+                base.OnRenderItemText(e);
+            }
+        }
+
+        private class CustomColorTable : ProfessionalColorTable
+        {
+            public override Color MenuBorder => Color.FromArgb(60, 60, 60);
+            public override Color MenuItemBorder => Color.FromArgb(70, 130, 180);
+            public override Color MenuItemSelected => Color.FromArgb(70, 130, 180);
+            public override Color MenuItemSelectedGradientBegin => Color.FromArgb(70, 130, 180);
+            public override Color MenuItemSelectedGradientEnd => Color.FromArgb(70, 130, 180);
         }
 
         private void OpenKeybindsConfiguration()
@@ -196,16 +276,13 @@ namespace MultiClicker.UI
             {
                 using (var keybindsForm = new KeybindsConfigForm())
                 {
-                    if (keybindsForm.ShowDialog(this) == DialogResult.OK)
-                    {
-                        var tooltipText = GenerateTooltipText();
-                    }
+                    keybindsForm.ShowDialog(this);
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Erreur lors de l'ouverture de la configuration des raccourcis: {ex.Message}", 
-                    "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(string.Format(Strings.ErrorOpeningKeybinds, ex.Message), 
+                    Strings.ErrorTitle, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -231,8 +308,8 @@ namespace MultiClicker.UI
         {
             return new OpenFileDialog
             {
-                Filter = "Image Files(*.BMP;*.JPG;*.GIF;*.PNG)|*.BMP;*.JPG;*.GIF;*.PNG|All files (*.*)|*.*",
-                Title = "Select Image"
+                Filter = $"{Strings.ImageFiles}(*.BMP;*.JPG;*.GIF;*.PNG)|*.BMP;*.JPG;*.GIF;*.PNG|{Strings.AllFiles}|*.*",
+                Title = Strings.SelectBackgroundImage
             };
         }
 
@@ -240,15 +317,15 @@ namespace MultiClicker.UI
         {
             var contextMenu = new ContextMenuStrip();
 
-            var moveUpItem = new ToolStripMenuItem("Move Up");
+            var moveUpItem = new ToolStripMenuItem(Strings.MoveUp);
             moveUpItem.Click += MoveUpItem_Click;
             contextMenu.Items.Add(moveUpItem);
 
-            var moveDownItem = new ToolStripMenuItem("Move Down");
+            var moveDownItem = new ToolStripMenuItem(Strings.MoveDown);
             moveDownItem.Click += MoveDownItem_Click;
             contextMenu.Items.Add(moveDownItem);
 
-            var changeImageItem = new ToolStripMenuItem("Change Image");
+            var changeImageItem = new ToolStripMenuItem(Strings.ChangeBackground);
             changeImageItem.Click += ChangeImagePanel_Click;
             contextMenu.Items.Add(changeImageItem);
 
@@ -547,33 +624,5 @@ namespace MultiClicker.UI
         }
         #endregion
 
-        #region Helper Methods
-        private string GenerateTooltipText()
-        {
-            var keyBinds = new Dictionary<string, string>
-            {
-                { "CLICK with Delay", ConfigurationService.Current.Keybinds[TRIGGERS.SIMPLE_CLICK].ToString() },
-                { "Click without Delay", ConfigurationService.Current.Keybinds[TRIGGERS.SIMPLE_CLICK_NO_DELAY].ToString() },
-                { "Double Click", ConfigurationService.Current.Keybinds[TRIGGERS.DOUBLE_CLICK].ToString() },
-                { "Next character", ConfigurationService.Current.Keybinds[TRIGGERS.SELECT_NEXT].ToString() },
-                { "Previous Character", ConfigurationService.Current.Keybinds[TRIGGERS.SELECT_PREVIOUS].ToString() },
-                { "Input chat commands (Dofus Open discussion --> Tab)", ConfigurationService.Current.Keybinds[TRIGGERS.TRAVEL].ToString() },
-                { "Auto complete HDV (see position config) -->", "² + MRbutton" },
-                { "Positions' config -->", ConfigurationService.Current.Keybinds[TRIGGERS.OPTIONS].ToString() },
-            };
-
-            var tooltipText = new System.Text.StringBuilder();
-            tooltipText.AppendLine("FUNCTION ----> Bind\n");
-            
-            foreach (var keyBind in keyBinds)
-            {
-                tooltipText.AppendLine($"{keyBind.Key}----->{keyBind.Value}");
-            }
-            
-            tooltipText.AppendLine("Ctrl + Alt + V -----> paste on all windows");
-            
-            return tooltipText.ToString();
-        }
-        #endregion
     }
 }

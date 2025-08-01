@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using MultiClicker.Models;
 using MultiClicker.Services;
+using MultiClicker.Properties;
 
 namespace MultiClicker.UI
 {
@@ -118,18 +119,18 @@ namespace MultiClicker.UI
         {
             _triggerDescriptions = new Dictionary<TRIGGERS, string>
             {
-                { TRIGGERS.SELECT_NEXT, "Sélectionner le panneau suivant" },
-                { TRIGGERS.SELECT_PREVIOUS, "Sélectionner le panneau précédent" },
-                { TRIGGERS.TRAVEL, "Commandes de chat (Discussion)" },
-                { TRIGGERS.OPTIONS, "Configuration des positions" },
-                { TRIGGERS.SIMPLE_CLICK, "Clic simple avec délai" },
-                { TRIGGERS.DOUBLE_CLICK, "Double clic" },
-                { TRIGGERS.SIMPLE_CLICK_NO_DELAY, "Clic simple sans délai" },
-                { TRIGGERS.DOFUS_HAVENBAG, "Havresac Dofus" },
-                { TRIGGERS.DOFUS_OPEN_DISCUSSION, "Ouvrir discussion Dofus" },
-                { TRIGGERS.GROUP_CHARACTERS, "Grouper les personnages" },
-                { TRIGGERS.FILL_HDV, "Remplir prix de vente HDV" },
-                { TRIGGERS.PASTE_ON_ALL_WINDOWS, "Coller sur toutes les fenêtres" }
+                { TRIGGERS.SELECT_NEXT, Strings.SELECT_NEXT },
+                { TRIGGERS.SELECT_PREVIOUS, Strings.SELECT_PREVIOUS },
+                { TRIGGERS.TRAVEL, Strings.TRAVEL },
+                { TRIGGERS.OPTIONS, Strings.OPTIONS },
+                { TRIGGERS.SIMPLE_CLICK, Strings.SIMPLE_CLICK },
+                { TRIGGERS.DOUBLE_CLICK, Strings.DOUBLE_CLICK },
+                { TRIGGERS.SIMPLE_CLICK_NO_DELAY, Strings.SIMPLE_CLICK_NO_DELAY },
+                { TRIGGERS.DOFUS_HAVENBAG, Strings.DOFUS_HAVENBAG },
+                { TRIGGERS.DOFUS_OPEN_DISCUSSION, Strings.DOFUS_OPEN_DISCUSSION },
+                { TRIGGERS.GROUP_CHARACTERS, Strings.GROUP_CHARACTERS },
+                { TRIGGERS.FILL_HDV, Strings.FILL_HDV },
+                { TRIGGERS.PASTE_ON_ALL_WINDOWS, Strings.PasteOnAllWindows }
             };
         }
 
@@ -163,7 +164,7 @@ namespace MultiClicker.UI
 
         private void CreateInterface()
         {
-            this.Text = "Configuration des Raccourcis Clavier";
+            this.Text = Strings.KeybindsFormTitle;
             this.Size = new Size(600, 500);
             this.StartPosition = FormStartPosition.CenterParent;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -181,7 +182,7 @@ namespace MultiClicker.UI
             // Title
             var titleLabel = new Label
             {
-                Text = "Configuration des Raccourcis Clavier",
+                Text = Strings.KeybindsFormTitle,
                 Font = new Font("Segoe UI", 12, FontStyle.Bold),
                 Dock = DockStyle.Top,
                 Height = 30,
@@ -192,7 +193,7 @@ namespace MultiClicker.UI
             // Instruction
             var instructionLabel = new Label
             {
-                Text = "Cliquez sur un champ puis appuyez sur les touches et/ou cliquez avec la souris (gauche, droite, milieu, X1, X2) pour définir le raccourci. Le clic initial n'est pas enregistré.",
+                Text = Strings.KeybindsInstructions,
                 Dock = DockStyle.Top,
                 Height = 60,
                 TextAlign = ContentAlignment.MiddleLeft,
@@ -243,7 +244,7 @@ namespace MultiClicker.UI
             // Header
             var headerDescription = new Label
             {
-                Text = "Action",
+                Text = Strings.ActionColumn,
                 Font = new Font("Segoe UI", 9, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleLeft,
                 Dock = DockStyle.Fill
@@ -252,7 +253,7 @@ namespace MultiClicker.UI
 
             var headerKeybind = new Label
             {
-                Text = "Raccourci",
+                Text = Strings.ShortcutColumn,
                 Font = new Font("Segoe UI", 9, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleLeft,
                 Dock = DockStyle.Fill
@@ -261,7 +262,7 @@ namespace MultiClicker.UI
 
             var headerClear = new Label
             {
-                Text = "Effacer",
+                Text = Strings.ClearColumn,
                 Font = new Font("Segoe UI", 9, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleCenter,
                 Dock = DockStyle.Fill
@@ -309,7 +310,7 @@ namespace MultiClicker.UI
             // Clear button
             var clearButton = new Button
             {
-                Text = "✖",
+                Text = Strings.ClearButton,
                 Size = new Size(25, 23),
                 Anchor = AnchorStyles.None,
                 Tag = trigger,
@@ -328,7 +329,7 @@ namespace MultiClicker.UI
             _isCapturingInput = false; // Start without capturing, wait for user input
             _currentCombination = new KeyCombination(); // Reset current combination
             textBox.BackColor = Color.LightYellow;
-            textBox.Text = "Appuyez sur les touches et/ou cliquez...";
+            textBox.Text = Strings.PressKeysPrompt;
         }
 
         private void KeybindTextBox_Leave(object sender, EventArgs e)
@@ -376,7 +377,7 @@ namespace MultiClicker.UI
                 // If already focused and user clicks again, prepare to capture next input
                 _isCapturingInput = true;
                 _currentCombination = new KeyCombination();
-                textBox.Text = "Prêt à capturer...";
+                textBox.Text = Strings.ReadyToCapture;
             }
         }
 
@@ -417,7 +418,7 @@ namespace MultiClicker.UI
             {
                 _isCapturingInput = true;
                 _currentCombination = new KeyCombination();
-                textBox.Text = "Appuyez sur les touches et/ou cliquez...";
+                textBox.Text = Strings.PressKeysPrompt;
                 return;
             }
 
@@ -459,11 +460,11 @@ namespace MultiClicker.UI
         {
             if (_currentCombination.IsEmpty)
             {
-                textBox.Text = "Appuyez sur les touches et/ou cliquez...";
+                textBox.Text = Strings.PressKeysPrompt;
             }
             else
             {
-                textBox.Text = _currentCombination.ToString() + " (Entrée pour confirmer, Échap pour annuler)";
+                textBox.Text = _currentCombination.ToString() + Strings.KeyCombinationInstruction;
             }
         }
 
@@ -517,7 +518,7 @@ namespace MultiClicker.UI
         {
             _saveButton = new Button
             {
-                Text = "Sauvegarder",
+                Text = Strings.SaveButton,
                 Size = new Size(100, 30),
                 Location = new Point(10, 10),
                 BackColor = Color.LightGreen,
@@ -528,7 +529,7 @@ namespace MultiClicker.UI
 
             _cancelButton = new Button
             {
-                Text = "Annuler",
+                Text = Strings.CancelButton,
                 Size = new Size(100, 30),
                 Location = new Point(120, 10),
                 BackColor = Color.LightCoral,
@@ -539,7 +540,7 @@ namespace MultiClicker.UI
 
             _resetButton = new Button
             {
-                Text = "Réinitialiser",
+                Text = Strings.ResetButton,
                 Size = new Size(100, 30),
                 Location = new Point(230, 10),
                 BackColor = Color.LightBlue,
@@ -557,7 +558,7 @@ namespace MultiClicker.UI
                 ConfigurationService.UpdateKeybind(kvp.Key, kvp.Value);
             }
 
-            MessageBox.Show("Configuration sauvegardée avec succès!", "Succès", 
+            MessageBox.Show(Strings.ConfigSavedSuccessfully, Strings.SuccessTitle, 
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             
             this.DialogResult = DialogResult.OK;
@@ -572,7 +573,7 @@ namespace MultiClicker.UI
 
         private void ResetButton_Click(object sender, EventArgs e)
         {
-            if (MessageBox.Show("Êtes-vous sûr de vouloir réinitialiser tous les raccourcis ?", "Confirmation", 
+            if (MessageBox.Show(Strings.ResetConfirmation, Strings.ConfirmationTitle, 
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
             {
                 LoadCurrentKeybinds();
