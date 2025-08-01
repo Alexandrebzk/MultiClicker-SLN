@@ -125,10 +125,12 @@ namespace MultiClicker.UI
             };
 
             var helpButton = CreateHelpButton();
+            var keybindsButton = CreateKeybindsButton();
 
             closeButton.Click += (s, e) => Close();
             titleBar.Controls.Add(closeButton);
             titleBar.Controls.Add(helpButton);
+            titleBar.Controls.Add(keybindsButton);
 
             return titleBar;
         }
@@ -158,6 +160,53 @@ namespace MultiClicker.UI
             toolTip.SetToolTip(helpButton, tooltipText);
 
             return helpButton;
+        }
+
+        private Button CreateKeybindsButton()
+        {
+            var keybindsButton = new Button
+            {
+                Text = "⌨",
+                Dock = DockStyle.Left,
+                Width = 30,
+                Height = 30,
+                BackColor = Color.DarkBlue,
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                FlatAppearance = { BorderSize = 0 }
+            };
+
+            var toolTip = new ToolTip
+            {
+                InitialDelay = 10,
+                ReshowDelay = 500,
+                ShowAlways = true
+            };
+
+            toolTip.SetToolTip(keybindsButton, "Configuration des raccourcis clavier");
+
+            keybindsButton.Click += (s, e) => OpenKeybindsConfiguration();
+
+            return keybindsButton;
+        }
+
+        private void OpenKeybindsConfiguration()
+        {
+            try
+            {
+                using (var keybindsForm = new KeybindsConfigForm())
+                {
+                    if (keybindsForm.ShowDialog(this) == DialogResult.OK)
+                    {
+                        var tooltipText = GenerateTooltipText();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Erreur lors de l'ouverture de la configuration des raccourcis: {ex.Message}", 
+                    "Erreur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private FlowLayoutPanel CreateFlowLayoutPanel()
@@ -216,7 +265,7 @@ namespace MultiClicker.UI
             _titleBar.MouseMove += TitleBar_MouseMove;
 
             HookManagementService.ShouldOpenMenuTravel += HandleTravelMenuRequest;
-            HookManagementService.ShouldOpenKeyBindForm += HandleKeyBindFormRequest;
+            HookManagementService.ShouldOpenPositionConfiguration += HandleKeyBindFormRequest;
         }
 
         private void InitializeHooks()
@@ -439,7 +488,7 @@ namespace MultiClicker.UI
         {
             Invoke((MethodInvoker)delegate
             {
-                using (var inputForm = new KeyBindForm())
+                using (var inputForm = new PositionConfigurationForm())
                 {
                     inputForm.ShowDialog();
                 }

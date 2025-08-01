@@ -19,7 +19,7 @@ namespace MultiClicker.Core
             {
                 // Register hook service events
                 HookManagementService.ShouldOpenMenuTravel += OnTravelMenuRequested;
-                HookManagementService.ShouldOpenKeyBindForm += OnKeyBindFormRequested;
+                HookManagementService.ShouldOpenPositionConfiguration += OnKeyBindFormRequested;
 
                 Trace.WriteLine("Application event handlers registered successfully");
             }
@@ -38,7 +38,7 @@ namespace MultiClicker.Core
             {
                 // Unregister hook service events
                 HookManagementService.ShouldOpenMenuTravel -= OnTravelMenuRequested;
-                HookManagementService.ShouldOpenKeyBindForm -= OnKeyBindFormRequested;
+                HookManagementService.ShouldOpenPositionConfiguration -= OnKeyBindFormRequested;
 
                 Trace.WriteLine("Application event handlers unregistered successfully");
             }
