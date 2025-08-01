@@ -179,6 +179,7 @@ namespace MultiClicker.Services
             KeyActions[TRIGGERS.SIMPLE_CLICK] = obj => WindowManagementService.PerformWindowClick(_cursorPosition, false);
             KeyActions[TRIGGERS.SIMPLE_CLICK_NO_DELAY] = obj => WindowManagementService.PerformWindowClick(_cursorPosition, true);
             KeyActions[TRIGGERS.DOUBLE_CLICK] = obj => WindowManagementService.PerformWindowDoubleClick(_cursorPosition);
+            KeyActions[TRIGGERS.GROUP_CHARACTERS] = obj => WindowManagementService.GroupCharacters();
         }
 
         /// <summary>
@@ -261,8 +262,8 @@ namespace MultiClicker.Services
                         Task.Run(() =>
                         {
                             Trace.WriteLine("Starting price analysis");
+                            Thread.Sleep(500);
                             WindowManagementService.FillSellPriceBasedOnForeGroundWindow();
-                            Thread.Sleep(800);
                             KeysPressed.Remove(Keys.Oem7);
                         });
                     }

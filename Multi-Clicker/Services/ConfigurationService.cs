@@ -160,6 +160,7 @@ namespace MultiClicker.Services
                 { TRIGGERS.SIMPLE_CLICK_NO_DELAY, Keys.MButton },
                 { TRIGGERS.DOFUS_HAVENBAG, Keys.H },
                 { TRIGGERS.DOFUS_OPEN_DISCUSSION, Keys.Tab },
+                { TRIGGERS.GROUP_CHARACTERS, Keys.F5 },
                 { TRIGGERS.TRAVEL, Keys.F6 },
                 { TRIGGERS.OPTIONS, Keys.F12 }
             };
