@@ -165,7 +165,7 @@ namespace MultiClicker.UI
         private void CreateInterface()
         {
             this.Text = Strings.KeybindsFormTitle;
-            this.Size = new Size(600, 500);
+            this.Size = new Size(800, 600);
             this.StartPosition = FormStartPosition.CenterParent;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
@@ -213,7 +213,7 @@ namespace MultiClicker.UI
             // Table layout for keybinds
             _mainTableLayout = new TableLayoutPanel
             {
-                Dock = DockStyle.Top,
+                Dock = DockStyle.Bottom,
                 AutoSize = true,
                 ColumnCount = 3,
                 RowCount = _pendingKeybinds.Count + 1,
@@ -224,9 +224,10 @@ namespace MultiClicker.UI
             _mainTableLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35F));
             _mainTableLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15F));
 
-            scrollPanel.Controls.Add(_mainTableLayout);
 
             CreateKeybindRows();
+
+            scrollPanel.Controls.Add(_mainTableLayout);
 
             // Button panel
             var buttonPanel = new Panel

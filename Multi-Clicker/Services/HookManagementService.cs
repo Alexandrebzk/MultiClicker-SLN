@@ -67,7 +67,7 @@ namespace MultiClicker.Services
         #endregion
 
         #region Private Fields
-        private static readonly Dictionary<TRIGGERS, (Action<object> action, bool hasCooldown)> KeyActions = new Dictionary<TRIGGERS, (Action<object>, bool)>();
+        private static readonly Dictionary<TRIGGERS, (Action<object> action, TimeSpan minimumCooldown)> KeyActions = new Dictionary<TRIGGERS, (Action<object>, TimeSpan)>();
         private static readonly HashSet<Keys> KeysPressed = new HashSet<Keys>();
         private static readonly HashSet<MouseMessages> MouseButtonsPressed = new HashSet<MouseMessages>();
         private static bool _xButton1Pressed = false;
@@ -75,7 +75,6 @@ namespace MultiClicker.Services
         private static readonly Random Random = new Random();
         private static POINT _cursorPosition;
         private static readonly Dictionary<TRIGGERS, DateTime> _lastExecutionTime = new Dictionary<TRIGGERS, DateTime>();
-        private static readonly TimeSpan _executionCooldown = TimeSpan.FromMilliseconds(500); // 500ms cooldown
         #endregion
 
         #region Public Events
@@ -147,41 +146,41 @@ namespace MultiClicker.Services
         #endregion
 
         #region Private Methods
-        private static bool ExecuteWithCooldown(TRIGGERS trigger, Action<object> action)
+        private static bool ExecuteWithCooldown(TRIGGERS trigger, (Action<object> action, TimeSpan minimumCooldown) actionData)
         {
             var now = DateTime.Now;
             
             if (_lastExecutionTime.ContainsKey(trigger))
             {
                 var timeSinceLastExecution = now - _lastExecutionTime[trigger];
-                if (timeSinceLastExecution < _executionCooldown)
+                if (timeSinceLastExecution < actionData.minimumCooldown)
                 {
-                    return false; // Still in cooldown period
+                    return false;
                 }
             }
             
             _lastExecutionTime[trigger] = now;
-            Task.Run(() => action(null));
+            Task.Run(() => actionData.action(null));
             return true;
         }
 
         private static void InitializeKeyActions()
         {
-            KeyActions[TRIGGERS.SELECT_NEXT] = (obj => PanelManagementService.SelectNextPanel(), false);
-            KeyActions[TRIGGERS.SELECT_PREVIOUS] = (obj => PanelManagementService.SelectPreviousPanel(), false);
-            KeyActions[TRIGGERS.SIMPLE_CLICK] = (obj => WindowManagementService.PerformWindowClick(_cursorPosition, false), false);
-            KeyActions[TRIGGERS.SIMPLE_CLICK_NO_DELAY] = (obj => WindowManagementService.PerformWindowClick(_cursorPosition, true), false);
-            KeyActions[TRIGGERS.DOUBLE_CLICK] = (obj => WindowManagementService.PerformWindowDoubleClick(_cursorPosition), false);
-            KeyActions[TRIGGERS.GROUP_CHARACTERS] = (obj => WindowManagementService.GroupCharacters(), true);
-            KeyActions[TRIGGERS.TRAVEL] = (obj => ShouldOpenMenuTravel?.Invoke(), true);
-            KeyActions[TRIGGERS.OPTIONS] = (obj => ShouldOpenPositionConfiguration?.Invoke(), true);
-            KeyActions[TRIGGERS.PASTE_ON_ALL_WINDOWS] = (obj => HandlePasteOnAllWindows(), true);
+            KeyActions[TRIGGERS.SELECT_NEXT] = (obj => PanelManagementService.SelectNextPanel(), TimeSpan.FromMilliseconds(100));
+            KeyActions[TRIGGERS.SELECT_PREVIOUS] = (obj => PanelManagementService.SelectPreviousPanel(), TimeSpan.FromMilliseconds(100));
+            KeyActions[TRIGGERS.SIMPLE_CLICK] = (obj => WindowManagementService.PerformWindowClick(_cursorPosition, false), TimeSpan.FromMilliseconds(100));
+            KeyActions[TRIGGERS.SIMPLE_CLICK_NO_DELAY] = (obj => WindowManagementService.PerformWindowClick(_cursorPosition, true), TimeSpan.FromMilliseconds(300));
+            KeyActions[TRIGGERS.DOUBLE_CLICK] = (obj => WindowManagementService.PerformWindowDoubleClick(_cursorPosition), TimeSpan.FromMilliseconds(100));
+            KeyActions[TRIGGERS.GROUP_CHARACTERS] = (obj => WindowManagementService.GroupCharacters(), TimeSpan.FromMilliseconds(1000));
+            KeyActions[TRIGGERS.TRAVEL] = (obj => ShouldOpenMenuTravel?.Invoke(), TimeSpan.FromMilliseconds(1000));
+            KeyActions[TRIGGERS.OPTIONS] = (obj => ShouldOpenPositionConfiguration?.Invoke(), TimeSpan.FromMilliseconds(1000));
+            KeyActions[TRIGGERS.PASTE_ON_ALL_WINDOWS] = (obj => HandlePasteOnAllWindows(), TimeSpan.FromMilliseconds(500));
             KeyActions[TRIGGERS.FILL_HDV] = (obj =>
             {
                 Trace.WriteLine("Starting price analysis");
                 Thread.Sleep(500);
                 WindowManagementService.FillSellPriceBasedOnForeGroundWindow();
-            }, true);
+            }, TimeSpan.FromMilliseconds(500));
         }
 
 /// <summary>
@@ -238,19 +237,7 @@ private static void UpdateModifierKeys()
                 {
                     if (KeyActions.TryGetValue(keybind.Key, out var actionData))
                     {
-                        if (actionData.hasCooldown)
-                        {
-                            if (ExecuteWithCooldown(keybind.Key, actionData.action))
-                            {
-                                return;
-                            }
-                        }
-                        else
-                        {
-                            // Execute directly without cooldown
-                            Task.Run(() => actionData.action(null));
-                            return;
-                        }
+                        ExecuteWithCooldown(keybind.Key, actionData);
                     }
                 }
             }
@@ -299,27 +286,12 @@ private static void UpdateModifierKeys()
                 {
                     if (KeyActions.TryGetValue(keybind.Key, out var actionData))
                     {
-                        bool executed = false;
-                        if (actionData.hasCooldown)
-                        {
-                            executed = ExecuteWithCooldown(keybind.Key, actionData.action);
-                        }
-                        else
-                        {
-                            // Execute directly without cooldown
-                            Task.Run(() => actionData.action(null));
-                            executed = true;
-                        }
-                        
-                        if (executed)
-                        {
-                            return; // Only execute one action per event
-                        }
+                        ExecuteWithCooldown(keybind.Key, actionData);
                     }
                 }
             }
 
-            // Handle original mouse events
+            // Handle special mouse events
             switch (message)
             {
                 case MouseMessages.WM_RBUTTONDOWN:

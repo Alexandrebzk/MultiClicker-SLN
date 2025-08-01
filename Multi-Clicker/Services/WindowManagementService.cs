@@ -208,6 +208,44 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
+        /// Reorders the WindowHandles dictionary to match the order of character names provided
+        /// </summary>
+        /// <param name="orderedCharacterNames">List of character names in the desired order</param>
+        public static void ReorderWindowHandles(List<string> orderedCharacterNames)
+        {
+            try
+            {
+                var reorderedHandles = new Dictionary<IntPtr, WindowInfo>();
+                
+                // Add windows in the order specified by orderedCharacterNames
+                foreach (var characterName in orderedCharacterNames)
+                {
+                    var windowEntry = WindowHandles.FirstOrDefault(kvp => kvp.Value.CharacterName == characterName);
+                    if (windowEntry.Key != IntPtr.Zero)
+                    {
+                        reorderedHandles[windowEntry.Key] = windowEntry.Value;
+                    }
+                }
+                
+                // Add any remaining windows that weren't in the ordered list
+                foreach (var kvp in WindowHandles)
+                {
+                    if (!reorderedHandles.ContainsKey(kvp.Key))
+                    {
+                        reorderedHandles[kvp.Key] = kvp.Value;
+                    }
+                }
+                
+                WindowHandles = reorderedHandles;
+                Trace.WriteLine($"Reordered WindowHandles to match panel order. Total windows: {WindowHandles.Count}");
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error reordering window handles: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// Sets the specified window to foreground - exact legacy behavior
         /// </summary>
         /// <param name="handle">The window handle</param>
@@ -242,36 +280,31 @@ namespace MultiClicker.Services
             {
                 var delay = !isNoDelay ? GetRandomDelay() : 0;
 
-                // Use parallel execution for better performance while maintaining reliability
-                var tasks = new List<Task>();
-                
-                foreach (var windowEntry in WindowHandles.ToList()) // ToList to avoid collection modification issues
+                if (isNoDelay)
                 {
-                    try
+                    var tasks = new List<Task>();
+                    foreach (var windowEntry in WindowHandles.ToList()) // ToList to avoid collection modification issues
                     {
-                        if (!isNoDelay)
-                        {
-                            Thread.Sleep(delay);
-                            PerformClickOnWindowWithRetry(windowEntry.Key, position);
-                        } else
-                        {
-                            Task.Run(() => PerformClickOnWindowWithRetry(windowEntry.Key, position));
-
-                        }
+                        tasks.Add(Task.Run(() => PerformClickOnWindow(windowEntry.Key, position)));
                     }
-                    catch (Exception ex)
+
+                    Task.WhenAll(tasks).ContinueWith(t =>
                     {
-                        Trace.WriteLine($"Error clicking on window {windowEntry.Value.WindowName}: {ex.Message}");
+                        if (t.Exception != null)
+                        {
+                            Trace.WriteLine($"Some click operations failed: {t.Exception.Flatten().Message}");
+                        }
+                    }, TaskContinuationOptions.OnlyOnFaulted);
+                }
+                else
+                {
+                    
+                    foreach (var windowEntry in WindowHandles.ToList()) // ToList to avoid collection modification issues
+                    {
+                        Thread.Sleep(delay);
+                        PerformClickOnWindow(windowEntry.Key, position);
                     }
                 }
-
-                Task.WhenAll(tasks).ContinueWith(t =>
-                {
-                    if (t.Exception != null)
-                    {
-                        Trace.WriteLine($"Some click operations failed: {t.Exception.Flatten().Message}");
-                    }
-                }, TaskContinuationOptions.OnlyOnFaulted);
             }
             catch (Exception ex)
             {
@@ -427,6 +460,17 @@ namespace MultiClicker.Services
 
             foreach (var key in keys)
             {
+                if (key == Keys.Tab)
+                {
+                    SendTab(windowHandle);
+                    continue;
+                }
+
+                if (key == Keys.Enter || key == Keys.Return)
+                {
+                    SendEnter(windowHandle);
+                    continue;
+                }
                 INPUT input = new INPUT();
                 input.type = INPUT_KEYBOARD;
                 input.u.ki = new KEYBDINPUT();
@@ -440,6 +484,11 @@ namespace MultiClicker.Services
 
             for (int i = keys.Count - 1; i >= 0; i--)
             {
+                if (keys[i] == Keys.Tab || keys[i] == Keys.Enter || keys[i] == Keys.Return)
+                {
+                    continue;
+                }
+
                 INPUT input = new INPUT();
                 input.type = INPUT_KEYBOARD;
                 input.u.ki = new KEYBDINPUT();
@@ -735,55 +784,17 @@ namespace MultiClicker.Services
         /// </summary>
         /// <param name="windowHandle">The target window handle</param>
         /// <param name="position">The position to click</param>
-        private static void PerformClickOnWindowWithRetry(IntPtr windowHandle, POINT position)
-        {
-            for (int attempt = 0; attempt < MaxClickRetries; attempt++)
-            {
-                try
-                {
-                    if (!IsWindow(windowHandle))
-                    {
-                        Trace.WriteLine($"Window handle is no longer valid on attempt {attempt + 1}");
-                        break;
-                    }
-
-                    var lParam = MakeLParam(position.X, position.Y);
-                    
-                    var result1 = SendMessage(windowHandle, 0x0201, IntPtr.Zero, lParam); // WM_LBUTTONDOWN
-                    var result2 = SendMessage(windowHandle, 0x0202, IntPtr.Zero, lParam); // WM_LBUTTONUP
-
-                    if (result1 != IntPtr.Zero || result2 != IntPtr.Zero)
-                    {
-                        return;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Trace.WriteLine($"Click attempt {attempt + 1} failed: {ex.Message}");
-                    if (attempt == MaxClickRetries - 1)
-                        throw;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Performs a click operation on the specified window (legacy method for compatibility)
-        /// </summary>
-        /// <param name="windowHandle">The target window handle</param>
-        /// <param name="position">The position to click</param>
         private static void PerformClickOnWindow(IntPtr windowHandle, POINT position)
         {
-            try
+            if (!IsWindow(windowHandle))
             {
-                var lParam = MakeLParam(position.X, position.Y);
-                PostMessage(windowHandle, 0x0201, IntPtr.Zero, lParam); // WM_LBUTTONDOWN
-                Thread.Sleep(25);
-                PostMessage(windowHandle, 0x0202, IntPtr.Zero, lParam); // WM_LBUTTONUP
+                Trace.WriteLine($"Window handle is no longer valid");
+                return;
             }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error performing click on window: {ex.Message}");
-            }
+
+            var lParam = MakeLParam(position.X, position.Y);
+            SendMessage(windowHandle, 0x0201, IntPtr.Zero, lParam);
+            SendMessage(windowHandle, 0x0202, IntPtr.Zero, lParam);
         }
 
         /// <summary>
@@ -795,32 +806,13 @@ namespace MultiClicker.Services
         {
             try
             {
-                PerformClickOnWindowWithRetry(windowHandle, position);
+                PerformClickOnWindow(windowHandle, position);
                 Thread.Sleep(50);
-                PerformClickOnWindowWithRetry(windowHandle, position);
+                PerformClickOnWindow(windowHandle, position);
             }
             catch (Exception ex)
             {
                 Trace.WriteLine($"Error performing double click with retry on window: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Performs a double click operation on the specified window (legacy method for compatibility)
-        /// </summary>
-        /// <param name="windowHandle">The target window handle</param>
-        /// <param name="position">The position to double click</param>
-        private static void PerformDoubleClickOnWindow(IntPtr windowHandle, POINT position)
-        {
-            try
-            {
-                PerformClickOnWindow(windowHandle, position);
-                Thread.Sleep(50);
-                PerformClickOnWindow(windowHandle, position);
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error performing double click on window: {ex.Message}");
             }
         }
 

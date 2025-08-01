@@ -120,7 +120,7 @@ namespace MultiClicker.UI
             {
                 Text = "✕",
                 Dock = DockStyle.Right,
-                Width = 40,
+                Width = 30,
                 Height = 30,
                 BackColor = Color.FromArgb(232, 17, 35),
                 ForeColor = Color.White,
@@ -136,7 +136,7 @@ namespace MultiClicker.UI
             {
                 Text = "☰",
                 Dock = DockStyle.Left,
-                Width = 40,
+                Width = 30,
                 Height = 30,
                 BackColor = Color.FromArgb(70, 130, 180),
                 ForeColor = Color.White,
@@ -147,18 +147,6 @@ namespace MultiClicker.UI
             menuButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(100, 150, 200);
             menuButton.Click += MenuButton_Click;
 
-            // Application title in the center
-            var titleLabel = new Label
-            {
-                Text = "MultiClicker",
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleCenter,
-                ForeColor = Color.White,
-                Font = new Font("Segoe UI", 10F, FontStyle.Bold),
-                BackColor = Color.Transparent
-            };
-
-            titleBar.Controls.Add(titleLabel);
             titleBar.Controls.Add(closeButton);
             titleBar.Controls.Add(menuButton);
 
@@ -413,6 +401,7 @@ namespace MultiClicker.UI
         {
             _flowLayoutPanel.SuspendLayout();
             _flowLayoutPanel.Controls.Clear();
+            var orderedCharacterNames = new List<string>();
 
             foreach (var panelEntry in ConfigurationService.Current.Panels)
             {
@@ -420,9 +409,10 @@ namespace MultiClicker.UI
                 if (panel != null)
                 {
                     _flowLayoutPanel.Controls.Add(panel);
+                    orderedCharacterNames.Add(panel.Name);
                 }
             }
-
+            WindowManagementService.ReorderWindowHandles(orderedCharacterNames);
             _flowLayoutPanel.ResumeLayout();
         }
 
@@ -546,6 +536,7 @@ namespace MultiClicker.UI
                 {
                     if (inputForm.ShowDialog() == DialogResult.OK)
                     {
+                        Thread.Sleep(100);
                         var inputText = inputForm.InputText;
                         var windowList = WindowManagementService.WindowHandles.ToList();
                         WindowManagementService.SendTextToWindows(inputText, windowList);
@@ -615,6 +606,17 @@ namespace MultiClicker.UI
 
         private void UpdatePanelOrder()
         {
+            // Get the ordered list of character names from the panel order
+            var orderedCharacterNames = new List<string>();
+            foreach (ExtendedPanel panel in _flowLayoutPanel.Controls.Cast<ExtendedPanel>())
+            {
+                orderedCharacterNames.Add(panel.Name);
+            }
+            
+            // Reorder the WindowHandles to match the panel order
+            WindowManagementService.ReorderWindowHandles(orderedCharacterNames);
+            
+            // Update the configuration
             ConfigurationService.Current.Panels.Clear();
             foreach (ExtendedPanel panel in _flowLayoutPanel.Controls.Cast<ExtendedPanel>())
             {
