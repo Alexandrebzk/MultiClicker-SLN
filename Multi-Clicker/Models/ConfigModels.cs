@@ -135,6 +135,8 @@ namespace MultiClicker.Models
         GROUP_CHARACTERS,
         FILL_HDV,
         PASTE_ON_ALL_WINDOWS,
+        TOGGLE_AUTOPILOT,
+        DOFUS_AUTOPILOT_SHORTCUT,
     }
 
     /// <summary>

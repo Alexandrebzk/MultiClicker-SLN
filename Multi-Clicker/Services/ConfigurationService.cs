@@ -6,6 +6,7 @@ using System.Linq;
 using System.Windows.Forms;
 using MultiClicker.Models;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace MultiClicker.Services
 {
@@ -181,6 +182,8 @@ namespace MultiClicker.Services
                 { TRIGGERS.GROUP_CHARACTERS, new KeyCombination(Keys.F5) },
                 { TRIGGERS.TRAVEL, new KeyCombination(Keys.F6) },
                 { TRIGGERS.OPTIONS, new KeyCombination(Keys.F12) },
+                { TRIGGERS.TOGGLE_AUTOPILOT, new KeyCombination(Keys.F8) }, // F8 - triggers autopilot function
+                { TRIGGERS.DOFUS_AUTOPILOT_SHORTCUT, new KeyCombination(Keys.W, true, false, false, false, false, false, false, false) }, // Ctrl + W - actual game command
                 { TRIGGERS.FILL_HDV, new KeyCombination(Keys.Oem7, false, false, false, true, false, false, false, false) },
                 { TRIGGERS.PASTE_ON_ALL_WINDOWS, new KeyCombination(Keys.V, true, false, true, false, false, false, false, false) }
             };

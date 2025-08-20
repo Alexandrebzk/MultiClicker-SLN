@@ -635,5 +635,23 @@ namespace MultiClicker.Properties {
                 return ResourceManager.GetString("Validate", resourceCulture);
             }
         }
+
+        /// <summary>
+        ///   Recherche une chaîne localisée semblable à TOGGLE_AUTOPILOT.
+        /// </summary>
+        internal static string ToggleAutoPilot {
+            get {
+                return ResourceManager.GetString("TOGGLE_AUTOPILOT", resourceCulture);
+            }
+        }
+
+        /// <summary>
+        ///   Recherche une chaîne localisée semblable à DOFUS_AUTOPILOT_SHORTCUT.
+        /// </summary>
+        internal static string DOFUS_AUTOPILOT_SHORTCUT {
+            get {
+                return ResourceManager.GetString("DOFUS_AUTOPILOT_SHORTCUT", resourceCulture);
+            }
+        }
     }
 }

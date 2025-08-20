@@ -130,7 +130,9 @@ namespace MultiClicker.UI
                 { TRIGGERS.DOFUS_OPEN_DISCUSSION, Strings.DOFUS_OPEN_DISCUSSION },
                 { TRIGGERS.GROUP_CHARACTERS, Strings.GROUP_CHARACTERS },
                 { TRIGGERS.FILL_HDV, Strings.FILL_HDV },
-                { TRIGGERS.PASTE_ON_ALL_WINDOWS, Strings.PasteOnAllWindows }
+                { TRIGGERS.PASTE_ON_ALL_WINDOWS, Strings.PasteOnAllWindows },
+                { TRIGGERS.TOGGLE_AUTOPILOT, Strings.ToggleAutoPilot },
+                { TRIGGERS.DOFUS_AUTOPILOT_SHORTCUT, Strings.DOFUS_AUTOPILOT_SHORTCUT }
             };
         }
 
@@ -165,7 +167,7 @@ namespace MultiClicker.UI
         private void CreateInterface()
         {
             this.Text = Strings.KeybindsFormTitle;
-            this.Size = new Size(800, 600);
+            this.Size = new Size(800, 700);
             this.StartPosition = FormStartPosition.CenterParent;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;

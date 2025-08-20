@@ -31,6 +31,38 @@ namespace MultiClicker.Services
 
         [DllImport("user32.dll")]
         static extern short GetKeyState(int nVirtKey);
+
+        [DllImport("user32.dll")]
+        private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
+
+        // Advanced input simulation APIs
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetCursorPos(int x, int y);
+
+        [DllImport("user32.dll")]
+        private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+        [DllImport("user32.dll")]
+        private static extern bool BringWindowToTop(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetActiveWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetFocus(IntPtr hWnd);
+
+        // Hardware scan code simulation
+        [DllImport("user32.dll")]
+        private static extern uint MapVirtualKey(uint uCode, uint uMapType);
         #endregion
 
         #region Constants and Enums
@@ -48,10 +80,18 @@ namespace MultiClicker.Services
             WM_XBUTTONUP = 0x020C
         }
 
-        public const int WM_KEYDOWN = 0x0100;
-        public const int WM_KEYUP = 0x0101;
         public const int WH_MOUSE_LL = 14;
         public const int WH_KEYBOARD_LL = 13;
+        public const int WM_KEYDOWN = 0x0100;
+        public const int WM_KEYUP = 0x0101;
+        
+        // Advanced input constants
+        private const uint KEYEVENTF_SCANCODE = 0x0008;
+        private const uint KEYEVENTF_KEYUP = 0x0002;
+        private const uint SWP_NOSIZE = 0x0001;
+        private const uint SWP_NOMOVE = 0x0002;
+        private const uint SWP_SHOWWINDOW = 0x0040;
+        private static readonly IntPtr HWND_TOP = new IntPtr(0);
         #endregion
 
         #region Structures
@@ -175,6 +215,7 @@ namespace MultiClicker.Services
             KeyActions[TRIGGERS.TRAVEL] = (obj => ShouldOpenMenuTravel?.Invoke(), TimeSpan.FromMilliseconds(1000));
             KeyActions[TRIGGERS.OPTIONS] = (obj => ShouldOpenPositionConfiguration?.Invoke(), TimeSpan.FromMilliseconds(1000));
             KeyActions[TRIGGERS.PASTE_ON_ALL_WINDOWS] = (obj => HandlePasteOnAllWindows(), TimeSpan.FromMilliseconds(500));
+            KeyActions[TRIGGERS.TOGGLE_AUTOPILOT] = (obj => HandleToggleAutoPilot(), TimeSpan.FromMilliseconds(1000));
             KeyActions[TRIGGERS.FILL_HDV] = (obj =>
             {
                 Trace.WriteLine("Starting price analysis");
@@ -183,19 +224,19 @@ namespace MultiClicker.Services
             }, TimeSpan.FromMilliseconds(500));
         }
 
-/// <summary>
-/// Updates the state of modifier keys
-/// </summary>
-private static void UpdateModifierKeys()
+        /// <summary>
+        /// Updates the state of modifier keys
+        /// </summary>
+        private static void UpdateModifierKeys()
         {
             var isAltPressed = (GetKeyState(0x12) & 0x8000) != 0;
             var isCtrlPressed = (GetKeyState(0x11) & 0x8000) != 0;
+            var isShiftPressed = (GetKeyState(0x10) & 0x8000) != 0;
 
             if (isAltPressed) KeysPressed.Add(Keys.Alt); else KeysPressed.Remove(Keys.Alt);
             if (isCtrlPressed) KeysPressed.Add(Keys.LControlKey); else KeysPressed.Remove(Keys.LControlKey);
-        }
-
-        private static bool IsKeyCombinationPressed(KeyCombination combination)
+            if (isShiftPressed) KeysPressed.Add(Keys.LShiftKey); else KeysPressed.Remove(Keys.LShiftKey);
+        }        private static bool IsKeyCombinationPressed(KeyCombination combination)
         {
             if (combination.IsEmpty) return false;
 
@@ -230,11 +271,18 @@ private static void UpdateModifierKeys()
         {
             KeysPressed.Add(key);
 
+            // Debug: log current key state when F8 is pressed
+            if (key == Keys.F8)
+            {
+                Trace.WriteLine($"F8 pressed. Current KeysPressed: {string.Join(", ", KeysPressed)}");
+            }
+
             // Check all keybind combinations (including those with mouse buttons)
             foreach (var keybind in ConfigurationService.Current.Keybinds)
             {
                 if (IsKeyCombinationPressed(keybind.Value))
                 {
+                    Trace.WriteLine($"Key combination triggered: {keybind.Key} -> {keybind.Value}");
                     if (KeyActions.TryGetValue(keybind.Key, out var actionData))
                     {
                         ExecuteWithCooldown(keybind.Key, actionData);
@@ -332,6 +380,150 @@ private static void UpdateModifierKeys()
                     entry.Key, 
                     new List<Keys> { Keys.LControlKey, Keys.V }, 
                     delay);
+            }
+        }
+
+        /// <summary>
+        /// Handles the toggle autopilot action by sending the command to all windows except the currently selected one
+        /// </summary>
+        private static void HandleToggleAutoPilot()
+        {
+            try
+            {
+                var autoPilotKey = ConfigurationService.Current.Keybinds.ContainsKey(TRIGGERS.DOFUS_AUTOPILOT_SHORTCUT) 
+                    ? ConfigurationService.Current.Keybinds[TRIGGERS.DOFUS_AUTOPILOT_SHORTCUT] 
+                    : null;
+                    
+                if (autoPilotKey == null || autoPilotKey.IsEmpty)
+                {
+                    Trace.WriteLine("DOFUS_AUTOPILOT_SHORTCUT key combination is not configured");
+                    return;
+                }
+
+                Trace.WriteLine($"Sending autopilot command to all windows except current: {autoPilotKey}");
+                var currentWindow = GetForegroundWindow();
+
+
+                foreach (var entry in WindowManagementService.WindowHandles)
+                {
+
+                    if (entry.Key == currentWindow)
+                    {
+                        Trace.WriteLine($"Skipping current window: {entry.Value.CharacterName}");
+                        continue;
+                    }
+
+                    Trace.WriteLine($"Sending autopilot to window: {entry.Value.CharacterName}");
+
+                    PanelManagementService.SelectNextPanel();
+                    SendAutoPilotKeyCombination(entry.Key, autoPilotKey);
+                    SendAutoPilotKeyCombination(entry.Key, autoPilotKey);
+                }
+
+                PanelManagementService.SelectNextPanel();
+
+                Trace.WriteLine("AutoPilot command sent to all other windows successfully");
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error in HandleToggleAutoPilot: {ex.Message}");
+            }
+        }
+
+
+        /// <summary>
+        /// Sends autopilot key combination using hardware scan codes with aggressive focus management
+        /// </summary>
+        private static void SendAutoPilotKeyCombination(IntPtr targetWindow, KeyCombination keyCombination)
+        {
+            try
+            {
+                Trace.WriteLine($"AutoPilot key combination to window {targetWindow}: {keyCombination}");
+                
+                SendScanCodes(keyCombination);
+                
+                Trace.WriteLine($"AutoPilot scan codes sent to window {targetWindow}");
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"AutoPilot key combination error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Sends scan codes with detailed verification and timing
+        /// </summary>
+        private static void SendScanCodes(KeyCombination keyCombination)
+        {
+            try
+            {
+                var modifierScanCodes = new List<(byte scanCode, string name)>();
+                var mainKeyScanCode = (byte)0;
+                
+                // Get scan codes for modifiers
+                if (keyCombination.Control)
+                {
+                    byte ctrlScanCode = (byte)MapVirtualKey((uint)Keys.ControlKey, 0);
+                    modifierScanCodes.Add((ctrlScanCode, "Ctrl"));
+                    Trace.WriteLine($"AutoPilot: Ctrl scan code = {ctrlScanCode}");
+                }
+                if (keyCombination.Shift)
+                {
+                    byte shiftScanCode = (byte)MapVirtualKey((uint)Keys.ShiftKey, 0);
+                    modifierScanCodes.Add((shiftScanCode, "Shift"));
+                    Trace.WriteLine($"AutoPilot: Shift scan code = {shiftScanCode}");
+                }
+                if (keyCombination.Alt)
+                {
+                    byte altScanCode = (byte)MapVirtualKey((uint)Keys.Menu, 0);
+                    modifierScanCodes.Add((altScanCode, "Alt"));
+                    Trace.WriteLine($"AutoPilot: Alt scan code = {altScanCode}");
+                }
+                
+                // Get scan code for main key
+                if (keyCombination.Key != Keys.None)
+                {
+                    mainKeyScanCode = (byte)MapVirtualKey((uint)keyCombination.Key, 0);
+                    Trace.WriteLine($"AutoPilot: {keyCombination.Key} scan code = {mainKeyScanCode}");
+                }
+                
+                // Send modifier keys DOWN with verification
+                foreach (var (scanCode, name) in modifierScanCodes)
+                {
+                    keybd_event(0, scanCode, KEYEVENTF_SCANCODE, 0);
+                    Trace.WriteLine($"AutoPilot: {name} (scan {scanCode}) DOWN");
+                    Thread.Sleep(5); // Small delay between modifiers
+                }
+                
+                // Send main key DOWN and UP with proper timing
+                if (mainKeyScanCode != 0)
+                {
+                    keybd_event(0, mainKeyScanCode, KEYEVENTF_SCANCODE, 0);
+                    Trace.WriteLine($"AutoPilot: {keyCombination.Key} (scan {mainKeyScanCode}) DOWN");
+                    
+                    // Hold the key for a realistic duration
+                    Thread.Sleep(20);
+                    
+                    keybd_event(0, mainKeyScanCode, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0);
+                    Trace.WriteLine($"AutoPilot: {keyCombination.Key} (scan {mainKeyScanCode}) UP");
+                }
+                
+                // Release modifier keys UP in reverse order
+                for (int i = modifierScanCodes.Count - 1; i >= 0; i--)
+                {
+                    var (scanCode, name) = modifierScanCodes[i];
+                    Thread.Sleep(5); // Small delay between releases
+                    keybd_event(0, scanCode, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0);
+                    Trace.WriteLine($"AutoPilot: {name} (scan {scanCode}) UP");
+                }
+                
+                // Final verification delay
+                Thread.Sleep(50);
+                Trace.WriteLine("AutoPilot: Scan code sequence completed");
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"SendScanCodesWithVerification error: {ex.Message}");
             }
         }
         #endregion
