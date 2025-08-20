@@ -7,7 +7,7 @@
 ### 🖥️ **Intelligent Window Management**
 - **Automatic Window Detection**: Detects and manages all Dofus windows automatically
 - **Smart Panel System**: Individual customizable panels for each window with visual feedback
-- **Drag & Drop Reordering**: Intuitive panel rearrangement
+- **Reordering**: Intuitive panel rearrangement (right click on panel)
 - **Visual Selection Indicators**: Clear selection highlighting with distinctive borders
 
 ### ⚡ **Advanced Click Automation**
@@ -57,6 +57,11 @@ See MultiClicker in action with these demonstration videos showcasing key featur
 
 *Shows the clipboard paste functionality distributing content to all managed Dofus windows*
 
+### 🤖 **AutoPilot/Auto-Follow**
+[📹 View Auto follow Demo](https://github.com/user-attachments/assets/8fc83b4c-2446-42cd-8ae4-3a730dff815e)
+
+*Activate auto follow on all characters, must be used while focusing the leader window. Press Dofus auto follow shortcut on leader to deactivate for all group*
+
 ## �🎯 **Comprehensive Keybind System**
 
 The application provides a complete set of keyboard shortcuts and mouse bindings for efficient multi-account management:
@@ -82,6 +87,7 @@ The application provides a complete set of keyboard shortcuts and mouse bindings
 
 ### 🛠️ **Utility Functions**
 - **📋 PASTE_ON_ALL_WINDOWS** (`Ctrl + Alt + V`): Paste clipboard content to all windows
+- **🤖 TOGGLE_AUTOPILOT** (`F8` key): Toggle autopilot/auto-follow mode on all other characters
 - **⚙️ OPTIONS** (`F12` key): Access application position settings (needed for HDV related features)
 
 ## 🏗️ **Application Architecture**
@@ -241,6 +247,7 @@ The application is built using the following libraries:
 - **Market (HDV) Operations**: Complete automation workflow for buying and selling
 - **Group Coordination**: Advanced party management and invitation systems
 - **Travel Synchronization**: Coordinated movement across multiple characters
+- **AutoPilot/Auto-Follow**: Activate AutoFollow on all characters
 - **Instant Quest Validation**: Thanks to the simultaneous clicking mechanism, you can validate quests all at once !
 
 ## 🔮 **Development Roadmap**

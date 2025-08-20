@@ -1073,6 +1073,71 @@ namespace MultiClicker.Services
 
         [DllImport("user32.dll")]
         private static extern short VkKeyScan(char ch);
+
+        /// <summary>
+        /// Alternative method to send key combination using SendMessage directly
+        /// </summary>
+        /// <param name="windowHandle">Target window handle</param>
+        /// <param name="keyCombination">Key combination to send</param>
+        public static void SendKeyComboDirectly(IntPtr windowHandle, KeyCombination keyCombination)
+        {
+            const uint WM_KEYDOWN = 0x0100;
+            const uint WM_KEYUP = 0x0101;
+            
+            try
+            {
+                Trace.WriteLine($"Sending key combination directly via SendMessage: {keyCombination}");
+                
+                // Send modifier keys down
+                if (keyCombination.Control)
+                {
+                    SendMessage(windowHandle, WM_KEYDOWN, (IntPtr)Keys.ControlKey, IntPtr.Zero);
+                    Thread.Sleep(10);
+                }
+                if (keyCombination.Shift)
+                {
+                    SendMessage(windowHandle, WM_KEYDOWN, (IntPtr)Keys.ShiftKey, IntPtr.Zero);
+                    Thread.Sleep(10);
+                }
+                if (keyCombination.Alt)
+                {
+                    SendMessage(windowHandle, WM_KEYDOWN, (IntPtr)Keys.Menu, IntPtr.Zero);
+                    Thread.Sleep(10);
+                }
+                
+                // Send main key down and up
+                if (keyCombination.Key != Keys.None)
+                {
+                    SendMessage(windowHandle, WM_KEYDOWN, (IntPtr)keyCombination.Key, IntPtr.Zero);
+                    Thread.Sleep(50);
+                    SendMessage(windowHandle, WM_KEYUP, (IntPtr)keyCombination.Key, IntPtr.Zero);
+                    Thread.Sleep(10);
+                }
+                
+                // Send modifier keys up (in reverse order)
+                if (keyCombination.Alt)
+                {
+                    SendMessage(windowHandle, WM_KEYUP, (IntPtr)Keys.Menu, IntPtr.Zero);
+                    Thread.Sleep(10);
+                }
+                if (keyCombination.Shift)
+                {
+                    SendMessage(windowHandle, WM_KEYUP, (IntPtr)Keys.ShiftKey, IntPtr.Zero);
+                    Thread.Sleep(10);
+                }
+                if (keyCombination.Control)
+                {
+                    SendMessage(windowHandle, WM_KEYUP, (IntPtr)Keys.ControlKey, IntPtr.Zero);
+                    Thread.Sleep(10);
+                }
+                
+                Trace.WriteLine("Direct SendMessage key combination completed");
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error in SendKeyComboDirectly: {ex.Message}");
+            }
+        }
         #endregion
     }
 }
