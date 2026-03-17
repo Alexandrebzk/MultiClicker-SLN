@@ -334,6 +334,7 @@ namespace MultiClicker.Services
                 {
                     if (KeyActions.TryGetValue(keybind.Key, out var actionData))
                     {
+                        Trace.WriteLine($"click combination triggered: {keybind.Key} -> {keybind.Value}");
                         ExecuteWithCooldown(keybind.Key, actionData);
                     }
                 }

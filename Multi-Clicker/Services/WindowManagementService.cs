@@ -27,14 +27,14 @@ namespace MultiClicker.Services
         public const int SM_CYCAPTION = 4;
         private const int KEYUP = 0x2;
         private const uint Restore = 9;
-        private const int ClickOffset = 5;
-        private const int TitleBarOffset = 4;
-        private const int BinarizationThreshold = 140;
-        private const int MaxClickRetries = 3; // Maximum number of click retry attempts
         private static readonly string OcrLanguage = "fra";
         private static readonly string TessdataPath = @"tessdata";
         private static readonly object TessEngineLock = new object();
         private static TesseractEngine _ocrEngine = null;
+        private const uint INPUT_MOUSE = 0;
+        private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+        private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+        private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
         #endregion
 
         #region Win32 API Declarations
@@ -792,9 +792,59 @@ namespace MultiClicker.Services
                 return;
             }
 
-            var lParam = MakeLParam(position.X, position.Y);
-            SendMessage(windowHandle, 0x0201, IntPtr.Zero, lParam);
-            SendMessage(windowHandle, 0x0202, IntPtr.Zero, lParam);
+            try
+            {
+                RECT windowRect = new RECT();
+                GetWindowRect(windowHandle, ref windowRect);
+
+                int screenX = windowRect.Left + position.X;
+                int screenY = windowRect.Top + position.Y;
+
+                int normalizedX = (screenX * 65535) / System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width;
+                int normalizedY = (screenY * 65535) / System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height;
+
+                INPUT[] inputs = new INPUT[2];
+
+                inputs[0] = new INPUT
+                {
+                    type = INPUT_MOUSE,
+                    u = new InputUnion
+                    {
+                        mi = new MOUSEINPUT
+                        {
+                            dx = normalizedX,
+                            dy = normalizedY,
+                            mouseData = 0,
+                            dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN,
+                            time = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
+                    }
+                };
+
+                inputs[1] = new INPUT
+                {
+                    type = INPUT_MOUSE,
+                    u = new InputUnion
+                    {
+                        mi = new MOUSEINPUT
+                        {
+                            dx = normalizedX,
+                            dy = normalizedY,
+                            mouseData = 0,
+                            dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP,
+                            time = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
+                    }
+                };
+
+                SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error performing click on window: {ex.Message}");
+            }
         }
 
         /// <summary>
