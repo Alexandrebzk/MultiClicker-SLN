@@ -27,14 +27,14 @@ namespace MultiClicker.Services
         public const int SM_CYCAPTION = 4;
         private const int KEYUP = 0x2;
         private const uint Restore = 9;
-        private const int ClickOffset = 5;
-        private const int TitleBarOffset = 4;
-        private const int BinarizationThreshold = 140;
-        private const int MaxClickRetries = 3; // Maximum number of click retry attempts
         private static readonly string OcrLanguage = "fra";
         private static readonly string TessdataPath = @"tessdata";
         private static readonly object TessEngineLock = new object();
         private static TesseractEngine _ocrEngine = null;
+        private const uint INPUT_MOUSE = 0;
+        private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+        private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+        private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
         #endregion
 
         #region Win32 API Declarations
@@ -253,6 +253,7 @@ namespace MultiClicker.Services
         {
             try
             {
+
                 if (IsIconic(handle))
                 {
                     ShowWindow(handle, Restore);
@@ -262,6 +263,7 @@ namespace MultiClicker.Services
                 keybd_event((byte)ALT, 0x45, EXTENDEDKEY | KEYUP, 0);
 
                 SetForegroundWindow(handle);
+
             }
             catch (Exception ex)
             {
@@ -280,30 +282,37 @@ namespace MultiClicker.Services
             {
                 var delay = !isNoDelay ? GetRandomDelay() : 0;
 
-                if (isNoDelay)
+                // Snapshot selected panel and window list to avoid concurrent modification
+                var selectedPanel = PanelManagementService.SelectedPanel;
+                var windowList = GetReorderedWindowList(selectedPanel);
+
+                foreach (var windowEntry in windowList)
                 {
-                    var tasks = new List<Task>();
-                    foreach (var windowEntry in WindowHandles.ToList()) // ToList to avoid collection modification issues
+
+                    int clickDelay = isNoDelay ? 200 : delay;
+
+                    PerformClickOnWindow(windowEntry.Key, position, clickDelay);
+
+                    try
                     {
-                        tasks.Add(Task.Run(() => PerformClickOnWindow(windowEntry.Key, position)));
+                        var flow = PanelManagementService.FlowLayoutPanel;
+                        if (flow != null && flow.InvokeRequired)
+                        {
+                            flow.BeginInvoke((Action)(() => {
+                                PanelManagementService.SelectNextPanel();
+                            }));
+                        }
+                        else
+                        {
+                            PanelManagementService.SelectNextPanel();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        try { PanelManagementService.SelectNextPanel(); } catch (Exception inner) { Trace.WriteLine($"Fallback SelectNextPanel failed: {inner.Message}"); }
                     }
 
-                    Task.WhenAll(tasks).ContinueWith(t =>
-                    {
-                        if (t.Exception != null)
-                        {
-                            Trace.WriteLine($"Some click operations failed: {t.Exception.Flatten().Message}");
-                        }
-                    }, TaskContinuationOptions.OnlyOnFaulted);
-                }
-                else
-                {
-                    
-                    foreach (var windowEntry in WindowHandles.ToList()) // ToList to avoid collection modification issues
-                    {
-                        Thread.Sleep(delay);
-                        PerformClickOnWindow(windowEntry.Key, position);
-                    }
+                    Thread.Sleep(5);
                 }
             }
             catch (Exception ex)
@@ -321,30 +330,40 @@ namespace MultiClicker.Services
             try
             {
                 var delay = GetRandomDelay();
+                var selectedPanel = PanelManagementService.SelectedPanel;
+                var windowList = GetReorderedWindowList(selectedPanel);
 
-                // Use parallel execution for better performance
-                var tasks = new List<Task>();
-                
-                foreach (var windowEntry in WindowHandles.ToList()) // ToList to avoid collection modification issues
+                foreach (var windowEntry in windowList)
                 {
                     try
                     {
-                        Task.Run(() => PerformDoubleClickOnWindowWithRetry(windowEntry.Key, position));
+                        Thread.Sleep(100);
+                        PerformClickOnWindow(windowEntry.Key, position, 50);
+                        PerformClickOnWindow(windowEntry.Key, position, 50);
+                        try
+                        {
+                            var flow = PanelManagementService.FlowLayoutPanel;
+                            if (flow != null && flow.InvokeRequired)
+                            {
+                                flow.BeginInvoke((Action)(() => {
+                                    PanelManagementService.SelectNextPanel();
+                                }));
+                            }
+                            else
+                            {
+                                PanelManagementService.SelectNextPanel();
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            try { PanelManagementService.SelectNextPanel(); } catch (Exception inner) { Trace.WriteLine($"Fallback SelectNextPanel failed: {inner.Message}"); }
+                        }
                     }
                     catch (Exception ex)
                     {
                         Trace.WriteLine($"Error double clicking on window {windowEntry.Value.WindowName}: {ex.Message}");
                     }
                 }
-
-                // Track completion for debugging
-                Task.WhenAll(tasks).ContinueWith(t =>
-                {
-                    if (t.Exception != null)
-                    {
-                        Trace.WriteLine($"Some double click operations failed: {t.Exception.Flatten().Message}");
-                    }
-                }, TaskContinuationOptions.OnlyOnFaulted);
             }
             catch (Exception ex)
             {
@@ -784,35 +803,67 @@ namespace MultiClicker.Services
         /// </summary>
         /// <param name="windowHandle">The target window handle</param>
         /// <param name="position">The position to click</param>
-        private static void PerformClickOnWindow(IntPtr windowHandle, POINT position)
+        private static void PerformClickOnWindow(IntPtr windowHandle, POINT position, int delay)
         {
             if (!IsWindow(windowHandle))
             {
-                Trace.WriteLine($"Window handle is no longer valid");
                 return;
             }
 
-            var lParam = MakeLParam(position.X, position.Y);
-            SendMessage(windowHandle, 0x0201, IntPtr.Zero, lParam);
-            SendMessage(windowHandle, 0x0202, IntPtr.Zero, lParam);
-        }
-
-        /// <summary>
-        /// Performs a double click operation on the specified window with retry mechanism
-        /// </summary>
-        /// <param name="windowHandle">The target window handle</param>
-        /// <param name="position">The position to double click</param>
-        private static void PerformDoubleClickOnWindowWithRetry(IntPtr windowHandle, POINT position)
-        {
             try
             {
-                PerformClickOnWindow(windowHandle, position);
-                Thread.Sleep(50);
-                PerformClickOnWindow(windowHandle, position);
+                RECT windowRect = new RECT();
+                GetWindowRect(windowHandle, ref windowRect);
+
+                int screenX = windowRect.Left + position.X;
+                int screenY = windowRect.Top + position.Y;
+
+                int normalizedX = (screenX * 65535) / System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width;
+                int normalizedY = (screenY * 65535) / System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height;
+
+                INPUT[] inputs = new INPUT[2];
+
+                inputs[0] = new INPUT
+                {
+                    type = INPUT_MOUSE,
+                    u = new InputUnion
+                    {
+                        mi = new MOUSEINPUT
+                        {
+                            dx = normalizedX,
+                            dy = normalizedY,
+                            mouseData = 0,
+                            dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN,
+                            time = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
+                    }
+                };
+
+                inputs[1] = new INPUT
+                {
+                    type = INPUT_MOUSE,
+                    u = new InputUnion
+                    {
+                        mi = new MOUSEINPUT
+                        {
+                            dx = normalizedX,
+                            dy = normalizedY,
+                            mouseData = 0,
+                            dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP,
+                            time = 0,
+                            dwExtraInfo = IntPtr.Zero
+                        }
+                    }
+                };
+
+                Thread.Sleep(delay/2);
+                SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+                Thread.Sleep(delay / 2);
             }
             catch (Exception ex)
             {
-                Trace.WriteLine($"Error performing double click with retry on window: {ex.Message}");
+                Trace.WriteLine($"Error performing click on window: {ex.Message}");
             }
         }
 
@@ -1058,6 +1109,43 @@ namespace MultiClicker.Services
             }
 
             return capturedBitmap;
+        }
+
+        /// <summary>
+        /// Reorders the window list to start from the next window after the selected one
+        /// </summary>
+        /// <param name="selectedPanel">The currently selected panel</param>
+        /// <param name="windowList">The list of windows to reorder</param>
+        /// <returns>Reordered list starting from the window after the selected one</returns>
+        private static List<KeyValuePair<IntPtr, WindowInfo>> GetReorderedWindowList(object selectedPanel)
+        {
+            try
+            {
+                // Find the selected window in the window list
+                var windowList = WindowHandles.ToList();
+                var selectedWindowEntry = windowList.FirstOrDefault(w => w.Value.RelatedPanel == selectedPanel);
+
+                // If we found the selected window, reorder the list to start from the next window after the selected one
+                if (selectedWindowEntry.Key != IntPtr.Zero)
+                {
+                    var selectedIndex = windowList.FindIndex(kvp => kvp.Key == selectedWindowEntry.Key);
+                    if (selectedIndex >= 0 && selectedIndex < windowList.Count - 1)
+                    {
+                        // Reorder: from (selectedIndex + 1) to end, then from start to selectedIndex
+                        return windowList
+                            .Skip(selectedIndex + 1)
+                            .Concat(windowList.Take(selectedIndex + 1))
+                            .ToList();
+                    }
+                }
+
+                return windowList;
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error reordering window list: {ex.Message}");
+                return WindowHandles.ToList();
+            }
         }
 
         /// <summary>

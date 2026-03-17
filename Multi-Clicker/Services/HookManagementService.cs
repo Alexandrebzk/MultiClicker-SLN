@@ -115,6 +115,8 @@ namespace MultiClicker.Services
         private static readonly Random Random = new Random();
         private static POINT _cursorPosition;
         private static readonly Dictionary<TRIGGERS, DateTime> _lastExecutionTime = new Dictionary<TRIGGERS, DateTime>();
+        // Track which triggers are currently running to prevent reentrancy
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<TRIGGERS, bool> _runningTriggers = new System.Collections.Concurrent.ConcurrentDictionary<TRIGGERS, bool>();
         #endregion
 
         #region Public Events
@@ -190,6 +192,13 @@ namespace MultiClicker.Services
         {
             var now = DateTime.Now;
             
+            // If trigger is already running, do not start it again
+            if (_runningTriggers.TryGetValue(trigger, out bool isRunning) && isRunning)
+            {
+                Trace.WriteLine($"Trigger {trigger} is already running, skipping execution.");
+                return false;
+            }
+
             if (_lastExecutionTime.ContainsKey(trigger))
             {
                 var timeSinceLastExecution = now - _lastExecutionTime[trigger];
@@ -200,7 +209,27 @@ namespace MultiClicker.Services
             }
             
             _lastExecutionTime[trigger] = now;
-            Task.Run(() => actionData.action(null));
+
+            // Mark trigger as running
+            _runningTriggers[trigger] = true;
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    actionData.action(null);
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Error executing trigger {trigger}: {ex.Message}");
+                }
+                finally
+                {
+                    // Clear running flag when finished
+                    _runningTriggers[trigger] = false;
+                }
+            });
+
             return true;
         }
 
@@ -269,27 +298,35 @@ namespace MultiClicker.Services
 
         private static void HandleKeyDown(Keys key)
         {
-            KeysPressed.Add(key);
-
-            // Debug: log current key state when F8 is pressed
-            if (key == Keys.F8)
+            // Ignore repeated WM_KEYDOWN messages for the same key (auto-repeat) by
+            // only handling the event when the key transitions from up to down.
+            // HashSet.Add returns true if the key was not present and was added.
+            bool isNewPress = KeysPressed.Add(key);
+            if (!isNewPress)
             {
-                Trace.WriteLine($"F8 pressed. Current KeysPressed: {string.Join(", ", KeysPressed)}");
+                // Key is already marked as pressed; this is an auto-repeat - ignore.
+                return;
             }
 
-            // Check all keybind combinations (including those with mouse buttons)
-            foreach (var keybind in ConfigurationService.Current.Keybinds)
-            {
-                if (IsKeyCombinationPressed(keybind.Value))
-                {
-                    Trace.WriteLine($"Key combination triggered: {keybind.Key} -> {keybind.Value}");
-                    if (KeyActions.TryGetValue(keybind.Key, out var actionData))
-                    {
-                        ExecuteWithCooldown(keybind.Key, actionData);
-                    }
-                }
-            }
-        }
+             // Debug: log current key state when F8 is pressed
+             if (key == Keys.F8)
+             {
+                 Trace.WriteLine($"F8 pressed. Current KeysPressed: {string.Join(", ", KeysPressed)}");
+             }
+
+             // Check all keybind combinations (including those with mouse buttons)
+             foreach (var keybind in ConfigurationService.Current.Keybinds)
+             {
+                 if (IsKeyCombinationPressed(keybind.Value))
+                 {
+                     Trace.WriteLine($"Key combination triggered: {keybind.Key} -> {keybind.Value}");
+                     if (KeyActions.TryGetValue(keybind.Key, out var actionData))
+                     {
+                         ExecuteWithCooldown(keybind.Key, actionData);
+                     }
+                 }
+             }
+         }
 
         private static void HandleKeyUp(Keys key)
         {
@@ -327,14 +364,28 @@ namespace MultiClicker.Services
                     break;
             }
 
+            // Only trigger actions for mouse-button-including keybinds on the actual button-down events
+            bool isMouseButtonDownEvent = message == MouseMessages.WM_LBUTTONDOWN
+                || message == MouseMessages.WM_RBUTTONDOWN
+                || message == MouseMessages.WM_MBUTTONDOWN
+                || message == MouseMessages.WM_XBUTTONDOWN;
+
             // Check for keybind combinations that include mouse buttons
             foreach (var keybind in ConfigurationService.Current.Keybinds)
             {
-                if (keybind.Value.HasMouseButtons && IsKeyCombinationPressed(keybind.Value))
+                // If the keybind requires mouse buttons, only evaluate on DOWN events to avoid repeats
+                if (keybind.Value.HasMouseButtons)
                 {
-                    if (KeyActions.TryGetValue(keybind.Key, out var actionData))
+                    if (!isMouseButtonDownEvent)
+                        continue;
+
+                    if (IsKeyCombinationPressed(keybind.Value))
                     {
-                        ExecuteWithCooldown(keybind.Key, actionData);
+                        if (KeyActions.TryGetValue(keybind.Key, out var actionData))
+                        {
+                            Trace.WriteLine($"click combination triggered: {keybind.Key} -> {keybind.Value}");
+                            ExecuteWithCooldown(keybind.Key, actionData);
+                        }
                     }
                 }
             }
