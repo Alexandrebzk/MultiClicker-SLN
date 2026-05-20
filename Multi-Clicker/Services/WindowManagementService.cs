@@ -35,6 +35,13 @@ namespace MultiClicker.Services
         private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
         private const uint MOUSEEVENTF_LEFTUP = 0x0004;
         private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+
+        // Background click messages
+        private const uint WM_LBUTTONDOWN = 0x0201;
+        private const uint WM_LBUTTONUP = 0x0202;
+        private const uint WM_LBUTTONDBLCLK = 0x0203;
+        private const uint WM_MOUSEACTIVATE = 0x0021;
+        private const int MK_LBUTTON = 0x0001;
         #endregion
 
         #region Win32 API Declarations
@@ -88,7 +95,29 @@ namespace MultiClicker.Services
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr RealChildWindowFromPoint(IntPtr hwndParent, POINT ptParentClientCoords);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr ChildWindowFromPointEx(IntPtr hwndParent, POINT pt, uint uFlags);
         #endregion
+
+        // Background click constants
+        private const uint CWP_SKIPINVISIBLE = 0x0001;
+        private const uint CWP_SKIPDISABLED = 0x0002;
+        private const uint CWP_SKIPTRANSPARENT = 0x0004;
+        private const uint WM_MOUSEMOVE = 0x0200;
+        private const uint WM_ACTIVATE = 0x0006;
+        private const int WA_CLICKACTIVE = 2;
 
         #region Constants
         private const uint INPUT_KEYBOARD = 1;
@@ -197,6 +226,116 @@ namespace MultiClicker.Services
             return foundWindows;
         }
 
+        private static readonly Regex DofusVersionRegex = new Regex(@"\b(\d+\.\d+(?:\.\d+){0,2})\b", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Enumerates running Dofus clients without mutating <see cref="WindowHandles"/>.
+        /// </summary>
+        /// <param name="detectedVersion">The detected game version (longest version-like dash-separated chunk), or null if unknown.</param>
+        /// <returns>The list of discovered Dofus windows.</returns>
+        public static List<WindowInfo> EnumerateDofusWindows(out string detectedVersion)
+        {
+            var results = new List<WindowInfo>();
+            string version = null;
+            try
+            {
+                var processes = Process.GetProcesses();
+                foreach (var p in processes)
+                {
+                    try
+                    {
+                        if (!p.ProcessName.StartsWith("Dofus", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        var hWnd = p.MainWindowHandle;
+                        if (hWnd == IntPtr.Zero || !IsWindow(hWnd))
+                            continue;
+
+                        var title = GetWindowTitle(hWnd);
+                        if (string.IsNullOrWhiteSpace(title))
+                            continue;
+
+                        var vm = DofusVersionRegex.Match(title);
+                        if (vm.Success)
+                        {
+                            var candidate = vm.Groups[1].Value;
+                            if (version == null || candidate.Length > version.Length)
+                                version = candidate;
+                        }
+
+                        var characterName = ExtractDofusCharacterName(title);
+                        if (string.IsNullOrEmpty(characterName))
+                            continue;
+
+                        results.Add(new WindowInfo
+                        {
+                            Handle = hWnd,
+                            WindowName = title,
+                            CharacterName = characterName,
+                            RelatedPanel = null
+                        });
+                    }
+                    catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error enumerating Dofus windows: {ex.Message}");
+            }
+            detectedVersion = version;
+            return results;
+        }
+
+        /// <summary>
+        /// Discovers Dofus client windows, refreshes <see cref="WindowHandles"/>, and caches the detected game version.
+        /// </summary>
+        public static Dictionary<IntPtr, WindowInfo> FindDofusWindows()
+        {
+            string detectedVersion;
+            var list = EnumerateDofusWindows(out detectedVersion);
+            var found = new Dictionary<IntPtr, WindowInfo>();
+            foreach (var wi in list)
+            {
+                if (wi.Handle != IntPtr.Zero && !found.ContainsKey(wi.Handle))
+                    found[wi.Handle] = wi;
+            }
+
+            if (!string.IsNullOrEmpty(detectedVersion))
+            {
+                try
+                {
+                    if (ConfigurationService.Current.General.GameVersion != detectedVersion)
+                    {
+                        ConfigurationService.Current.General.GameVersion = detectedVersion;
+                        ConfigurationService.SaveConfig();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Error caching detected Dofus version: {ex.Message}");
+                }
+            }
+
+            WindowHandles = found;
+            Trace.WriteLine($"Found {found.Count} Dofus windows (version: {detectedVersion ?? "unknown"})");
+            return found;
+        }
+
+        private static string ExtractDofusCharacterName(string windowTitle)
+        {
+            try
+            {
+                var sepIdx = windowTitle.IndexOf(" - ", StringComparison.Ordinal);
+                var head = sepIdx > 0 ? windowTitle.Substring(0, sepIdx).Trim() : windowTitle.Trim();
+                var spaceIdx = head.IndexOf(' ');
+                return spaceIdx > 0 ? head.Substring(0, spaceIdx).Trim() : head;
+            }
+            catch
+            {
+                return windowTitle;
+            }
+        }
+
         /// <summary>
         /// Checks if the specified handle is related to tracked windows
         /// </summary>
@@ -281,6 +420,7 @@ namespace MultiClicker.Services
             try
             {
                 var delay = !isNoDelay ? GetRandomDelay() : 0;
+                bool background = ConfigurationService.Current.General.PreferBackgroundClicks;
 
                 // Snapshot selected panel and window list to avoid concurrent modification
                 var selectedPanel = PanelManagementService.SelectedPanel;
@@ -288,28 +428,15 @@ namespace MultiClicker.Services
 
                 foreach (var windowEntry in windowList)
                 {
-
                     int clickDelay = isNoDelay ? 200 : delay;
 
                     PerformClickOnWindow(windowEntry.Key, position, clickDelay);
 
-                    try
+                    // Background clicks must not change focus or rotate the active panel
+                    // so the user can keep iterating the same selected character.
+                    if (!background)
                     {
-                        var flow = PanelManagementService.FlowLayoutPanel;
-                        if (flow != null && flow.InvokeRequired)
-                        {
-                            flow.BeginInvoke((Action)(() => {
-                                PanelManagementService.SelectNextPanel();
-                            }));
-                        }
-                        else
-                        {
-                            PanelManagementService.SelectNextPanel();
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        try { PanelManagementService.SelectNextPanel(); } catch (Exception inner) { Trace.WriteLine($"Fallback SelectNextPanel failed: {inner.Message}"); }
+                        SafeSelectNextPanel();
                     }
 
                     Thread.Sleep(5);
@@ -318,6 +445,26 @@ namespace MultiClicker.Services
             catch (Exception ex)
             {
                 Trace.WriteLine($"Error performing window click: {ex.Message}");
+            }
+        }
+
+        private static void SafeSelectNextPanel()
+        {
+            try
+            {
+                var flow = PanelManagementService.FlowLayoutPanel;
+                if (flow != null && flow.InvokeRequired)
+                {
+                    flow.BeginInvoke((Action)(() => PanelManagementService.SelectNextPanel()));
+                }
+                else
+                {
+                    PanelManagementService.SelectNextPanel();
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"SafeSelectNextPanel failed: {ex.Message}");
             }
         }
 
@@ -330,6 +477,7 @@ namespace MultiClicker.Services
             try
             {
                 var delay = GetRandomDelay();
+                bool background = ConfigurationService.Current.General.PreferBackgroundClicks;
                 var selectedPanel = PanelManagementService.SelectedPanel;
                 var windowList = GetReorderedWindowList(selectedPanel);
 
@@ -340,23 +488,10 @@ namespace MultiClicker.Services
                         Thread.Sleep(100);
                         PerformClickOnWindow(windowEntry.Key, position, 50);
                         PerformClickOnWindow(windowEntry.Key, position, 50);
-                        try
+
+                        if (!background)
                         {
-                            var flow = PanelManagementService.FlowLayoutPanel;
-                            if (flow != null && flow.InvokeRequired)
-                            {
-                                flow.BeginInvoke((Action)(() => {
-                                    PanelManagementService.SelectNextPanel();
-                                }));
-                            }
-                            else
-                            {
-                                PanelManagementService.SelectNextPanel();
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            try { PanelManagementService.SelectNextPanel(); } catch (Exception inner) { Trace.WriteLine($"Fallback SelectNextPanel failed: {inner.Message}"); }
+                            SafeSelectNextPanel();
                         }
                     }
                     catch (Exception ex)
@@ -818,53 +953,137 @@ namespace MultiClicker.Services
                 int screenX = windowRect.Left + position.X;
                 int screenY = windowRect.Top + position.Y;
 
-                int normalizedX = (screenX * 65535) / System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width;
-                int normalizedY = (screenY * 65535) / System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height;
-
-                INPUT[] inputs = new INPUT[2];
-
-                inputs[0] = new INPUT
+                if (ConfigurationService.Current.General.PreferBackgroundClicks)
                 {
-                    type = INPUT_MOUSE,
-                    u = new InputUnion
+                    // In background mode, never silently steal the cursor: just log on failure.
+                    if (!TryPerformBackgroundClick(windowHandle, screenX, screenY, delay, doubleClick: false))
                     {
-                        mi = new MOUSEINPUT
-                        {
-                            dx = normalizedX,
-                            dy = normalizedY,
-                            mouseData = 0,
-                            dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN,
-                            time = 0,
-                            dwExtraInfo = IntPtr.Zero
-                        }
+                        Trace.WriteLine($"Background click delivery failed for window {windowHandle}.");
                     }
-                };
+                    return;
+                }
 
-                inputs[1] = new INPUT
-                {
-                    type = INPUT_MOUSE,
-                    u = new InputUnion
-                    {
-                        mi = new MOUSEINPUT
-                        {
-                            dx = normalizedX,
-                            dy = normalizedY,
-                            mouseData = 0,
-                            dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP,
-                            time = 0,
-                            dwExtraInfo = IntPtr.Zero
-                        }
-                    }
-                };
-
-                Thread.Sleep(delay/2);
-                SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
-                Thread.Sleep(delay / 2);
+                PerformForegroundClick(windowHandle, screenX, screenY, delay);
             }
             catch (Exception ex)
             {
                 Trace.WriteLine($"Error performing click on window: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Attempts to deliver a left-click to the deepest descendant of the target window
+        /// at the given screen coordinates without stealing focus. Returns true on success.
+        /// </summary>
+        private static bool TryPerformBackgroundClick(IntPtr topLevelHandle, int screenX, int screenY, int delay, bool doubleClick)
+        {
+            try
+            {
+                // Drill down to the deepest visible/enabled child at the point so
+                // input reaches Dofus's 3D canvas / sub-controls instead of the top-level frame.
+                IntPtr target = topLevelHandle;
+                for (int i = 0; i < 8; i++)
+                {
+                    var clientPt = new POINT { X = screenX, Y = screenY };
+                    if (!ScreenToClient(target, ref clientPt))
+                    {
+                        break;
+                    }
+
+                    var child = ChildWindowFromPointEx(target, clientPt,
+                        CWP_SKIPINVISIBLE | CWP_SKIPDISABLED | CWP_SKIPTRANSPARENT);
+
+                    if (child == IntPtr.Zero || child == target)
+                    {
+                        break;
+                    }
+                    target = child;
+                }
+
+                var localPoint = new POINT { X = screenX, Y = screenY };
+                if (!ScreenToClient(target, ref localPoint))
+                {
+                    return false;
+                }
+
+                int lParam = (localPoint.Y << 16) | (localPoint.X & 0xFFFF);
+
+                // Hover first so the canvas updates its internal state.
+                PostMessage(target, WM_MOUSEMOVE, IntPtr.Zero, (IntPtr)lParam);
+
+                // Nudge activation without stealing the foreground.
+                SendMessage(target, WM_ACTIVATE, (IntPtr)WA_CLICKACTIVE, IntPtr.Zero);
+
+                // SendMessage is synchronous: the target window's WndProc has to process it.
+                SendMessage(target, WM_LBUTTONDOWN, (IntPtr)MK_LBUTTON, (IntPtr)lParam);
+                Thread.Sleep(Math.Max(1, delay / 4));
+                SendMessage(target, WM_LBUTTONUP, IntPtr.Zero, (IntPtr)lParam);
+
+                if (doubleClick)
+                {
+                    Thread.Sleep(Math.Max(1, delay / 4));
+                    SendMessage(target, WM_LBUTTONDBLCLK, (IntPtr)MK_LBUTTON, (IntPtr)lParam);
+                    Thread.Sleep(Math.Max(1, delay / 4));
+                    SendMessage(target, WM_LBUTTONUP, IntPtr.Zero, (IntPtr)lParam);
+                }
+
+                Thread.Sleep(Math.Max(1, delay / 4));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Background click failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Original SendInput-based click path. Steals the real cursor; used as a fallback.
+        /// </summary>
+        private static void PerformForegroundClick(IntPtr windowHandle, int screenX, int screenY, int delay)
+        {
+            int normalizedX = (screenX * 65535) / System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width;
+            int normalizedY = (screenY * 65535) / System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height;
+
+            INPUT[] inputs = new INPUT[2];
+
+            inputs[0] = new INPUT
+            {
+                type = INPUT_MOUSE,
+                u = new InputUnion
+                {
+                    mi = new MOUSEINPUT
+                    {
+                        dx = normalizedX,
+                        dy = normalizedY,
+                        mouseData = 0,
+                        dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            };
+
+            inputs[1] = new INPUT
+            {
+                type = INPUT_MOUSE,
+                u = new InputUnion
+                {
+                    mi = new MOUSEINPUT
+                    {
+                        dx = normalizedX,
+                        dy = normalizedY,
+                        mouseData = 0,
+                        dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            };
+
+            Thread.Sleep(delay / 2);
+            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+            Thread.Sleep(delay / 2);
         }
 
         /// <summary>

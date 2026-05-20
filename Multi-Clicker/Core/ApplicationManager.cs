@@ -98,9 +98,8 @@ namespace MultiClicker.Core
         {
             try
             {
-                var gameVersion = Configuration.General.GameVersion;
-                WindowManagementService.FindWindows("- " + gameVersion + " -");
-                Trace.WriteLine($"Window handles refreshed. Found {WindowManagementService.WindowHandles.Count} windows");
+                WindowManagementService.FindDofusWindows();
+                Trace.WriteLine($"Window handles refreshed. Found {WindowManagementService.WindowHandles.Count} Dofus windows (version: {Configuration.General.GameVersion ?? "unknown"})");
             }
             catch (Exception ex)
             {
@@ -117,8 +116,8 @@ namespace MultiClicker.Core
             {
                 Trace.WriteLine("Shutting down Application Manager...");
 
-                // Save configuration before shutdown
-                ConfigurationService.SaveConfig();
+                // Save configuration before shutdown (flush pending debounced writes)
+                ConfigurationService.SaveConfigImmediate();
 
                 // Dispose OCR resources
                 OCRService.Dispose();

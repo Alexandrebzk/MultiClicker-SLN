@@ -121,18 +121,13 @@ namespace MultiClicker.UI
             {
                 { TRIGGERS.SELECT_NEXT, Strings.SELECT_NEXT },
                 { TRIGGERS.SELECT_PREVIOUS, Strings.SELECT_PREVIOUS },
-                { TRIGGERS.TRAVEL, Strings.TRAVEL },
                 { TRIGGERS.OPTIONS, Strings.OPTIONS },
                 { TRIGGERS.SIMPLE_CLICK, Strings.SIMPLE_CLICK },
                 { TRIGGERS.DOUBLE_CLICK, Strings.DOUBLE_CLICK },
-                { TRIGGERS.SIMPLE_CLICK_NO_DELAY, Strings.SIMPLE_CLICK_NO_DELAY },
-                { TRIGGERS.DOFUS_HAVENBAG, Strings.DOFUS_HAVENBAG },
                 { TRIGGERS.DOFUS_OPEN_DISCUSSION, Strings.DOFUS_OPEN_DISCUSSION },
                 { TRIGGERS.GROUP_CHARACTERS, Strings.GROUP_CHARACTERS },
                 { TRIGGERS.FILL_HDV, Strings.FILL_HDV },
                 { TRIGGERS.PASTE_ON_ALL_WINDOWS, Strings.PasteOnAllWindows },
-                { TRIGGERS.TOGGLE_AUTOPILOT, Strings.ToggleAutoPilot },
-                { TRIGGERS.DOFUS_AUTOPILOT_SHORTCUT, Strings.DOFUS_AUTOPILOT_SHORTCUT }
             };
         }
 

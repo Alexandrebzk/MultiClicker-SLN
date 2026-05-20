@@ -216,20 +216,11 @@
   <data name="DOUBLE_CLICK" xml:space="preserve">
     <value>Double Click (No delay)</value>
   </data>
-  <data name="SIMPLE_CLICK_NO_DELAY" xml:space="preserve">
-    <value>Simple Click (No Delay)</value>
-  </data>
-  <data name="DOFUS_HAVENBAG" xml:space="preserve">
-    <value>Dofus Havenbag</value>
-  </data>
   <data name="DOFUS_OPEN_DISCUSSION" xml:space="preserve">
     <value>Dofus Open Discussion</value>
   </data>
   <data name="GROUP_CHARACTERS" xml:space="preserve">
     <value>Group Characters</value>
-  </data>
-  <data name="TRAVEL" xml:space="preserve">
-    <value>Travel</value>
   </data>
   <data name="OPTIONS" xml:space="preserve">
     <value>Options</value>
@@ -294,12 +285,6 @@
   <data name="PasteOnAllWindows" xml:space="preserve">
     <value>Paste on all windows</value>
   </data>
-  <data name="Validate" xml:space="preserve">
-    <value>Validate</value>
-  </data>
-  <data name="Menu" xml:space="preserve">
-    <value>Menu</value>
-  </data>
   <data name="KeyCombinationInstruction" xml:space="preserve">
     <value> (Enter to confirm, Escape to cancel)</value>
   </data>
@@ -309,10 +294,46 @@
   <data name="PASTE_ON_ALL_WINDOWS" xml:space="preserve">
     <value>Paste on All Windows</value>
   </data>
-  <data name="TOGGLE_AUTOPILOT" xml:space="preserve">
-    <value>Toggle Autopilot</value>
+  <data name="ModeMenu" xml:space="preserve">
+    <value>Mode</value>
   </data>
-  <data name="DOFUS_AUTOPILOT_SHORTCUT" xml:space="preserve">
-    <value>Dofus Autopilot Shortcut</value>
+  <data name="ModeAutomatic" xml:space="preserve">
+    <value>Automatic</value>
+  </data>
+  <data name="ModeManual" xml:space="preserve">
+    <value>Manual</value>
+  </data>
+  <data name="SelectCharacters" xml:space="preserve">
+    <value>Select characters</value>
+  </data>
+  <data name="PreferBackgroundClicks" xml:space="preserve">
+    <value>Prefer background clicks</value>
+  </data>
+  <data name="CharacterSelectionTitle" xml:space="preserve">
+    <value>Character selection</value>
+  </data>
+  <data name="CharactersTitle" xml:space="preserve">
+    <value>Select characters to display</value>
+  </data>
+  <data name="CharactersInstruction" xml:space="preserve">
+    <value>Check the running applications you want to display:</value>
+  </data>
+  <data name="SelectAll" xml:space="preserve">
+    <value>Select all</value>
+  </data>
+  <data name="DeselectAll" xml:space="preserve">
+    <value>Deselect all</value>
+  </data>
+  <data name="Save" xml:space="preserve">
+    <value>Save</value>
+  </data>
+  <data name="Cancel" xml:space="preserve">
+    <value>Cancel</value>
+  </data>
+  <data name="NoCharactersSelected" xml:space="preserve">
+    <value>Please select at least one character</value>
+  </data>
+  <data name="ErrorOpeningCharacterSelection" xml:space="preserve">
+    <value>Error opening character selection: {0}</value>
   </data>
 </root>

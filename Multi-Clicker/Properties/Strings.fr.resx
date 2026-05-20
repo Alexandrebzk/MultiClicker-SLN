@@ -216,20 +216,11 @@
   <data name="DOUBLE_CLICK" xml:space="preserve">
     <value>Double-Clic (Sans Délai)</value>
   </data>
-  <data name="SIMPLE_CLICK_NO_DELAY" xml:space="preserve">
-    <value>Clic Simple (Sans Délai)</value>
-  </data>
-  <data name="DOFUS_HAVENBAG" xml:space="preserve">
-    <value>Dofus Havresac</value>
-  </data>
   <data name="DOFUS_OPEN_DISCUSSION" xml:space="preserve">
     <value>Dofus Ouvrir Discussion</value>
   </data>
   <data name="GROUP_CHARACTERS" xml:space="preserve">
     <value>Grouper les Personnages</value>
-  </data>
-  <data name="TRAVEL" xml:space="preserve">
-    <value>Voyager</value>
   </data>
   <data name="OPTIONS" xml:space="preserve">
     <value>Options</value>
@@ -294,12 +285,6 @@
   <data name="PasteOnAllWindows" xml:space="preserve">
     <value>Coller sur toutes les fenêtres</value>
   </data>
-  <data name="Validate" xml:space="preserve">
-    <value>Valider</value>
-  </data>
-  <data name="Menu" xml:space="preserve">
-    <value>Menu</value>
-  </data>
   <data name="KeyCombinationInstruction" xml:space="preserve">
     <value> (Entrée pour confirmer, Échap pour annuler)</value>
   </data>
@@ -309,10 +294,46 @@
   <data name="PASTE_ON_ALL_WINDOWS" xml:space="preserve">
     <value>Coller sur Toutes les Fenêtres</value>
   </data>
-  <data name="TOGGLE_AUTOPILOT" xml:space="preserve">
-    <value>Basculer le Pilote Automatique</value>
+  <data name="ModeMenu" xml:space="preserve">
+    <value>Mode</value>
   </data>
-  <data name="DOFUS_AUTOPILOT_SHORTCUT" xml:space="preserve">
-    <value>Raccourci Pilote Auto Dofus</value>
+  <data name="ModeAutomatic" xml:space="preserve">
+    <value>Automatique</value>
+  </data>
+  <data name="ModeManual" xml:space="preserve">
+    <value>Manuel</value>
+  </data>
+  <data name="SelectCharacters" xml:space="preserve">
+    <value>Sélectionner personnages</value>
+  </data>
+  <data name="PreferBackgroundClicks" xml:space="preserve">
+    <value>Préférer clics en arrière-plan</value>
+  </data>
+  <data name="CharacterSelectionTitle" xml:space="preserve">
+    <value>Sélection des personnages</value>
+  </data>
+  <data name="CharactersTitle" xml:space="preserve">
+    <value>Sélectionner les personnages à afficher</value>
+  </data>
+  <data name="CharactersInstruction" xml:space="preserve">
+    <value>Cochez les applications lancées que vous souhaitez afficher :</value>
+  </data>
+  <data name="SelectAll" xml:space="preserve">
+    <value>Tout sélectionner</value>
+  </data>
+  <data name="DeselectAll" xml:space="preserve">
+    <value>Tout désélectionner</value>
+  </data>
+  <data name="Save" xml:space="preserve">
+    <value>Enregistrer</value>
+  </data>
+  <data name="Cancel" xml:space="preserve">
+    <value>Annuler</value>
+  </data>
+  <data name="NoCharactersSelected" xml:space="preserve">
+    <value>Veuillez sélectionner au moins un personnage</value>
+  </data>
+  <data name="ErrorOpeningCharacterSelection" xml:space="preserve">
+    <value>Erreur lors de l'ouverture de la sélection des personnages : {0}</value>
   </data>
 </root>

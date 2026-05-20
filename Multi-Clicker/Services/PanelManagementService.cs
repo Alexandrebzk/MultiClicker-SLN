@@ -296,12 +296,7 @@ namespace MultiClicker.Services
                     isSelectedProperty.SetValue(panel, isSelected);
                 }
 
-                // Update background color
-                panel.BackColor = isSelected 
-                    ? ColorTranslator.FromHtml("#ddfe00") 
-                    : Color.Transparent;
-
-                // Trigger panel redraw
+                // Trigger panel redraw (selection visuals are drawn by ExtendedPanel itself).
                 panel.Invalidate();
             }
             catch (Exception ex)

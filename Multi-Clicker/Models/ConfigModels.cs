@@ -15,6 +15,15 @@ namespace MultiClicker.Models
     }
 
     /// <summary>
+    /// Enumeration for panel display modes
+    /// </summary>
+    public enum PanelDisplayMode
+    {
+        AUTOMATIC,
+        MANUAL
+    }
+
+    /// <summary>
     /// General application configuration
     /// </summary>
     public class GeneralConfig
@@ -22,6 +31,9 @@ namespace MultiClicker.Models
         public string GameVersion { get; set; }
         public int MinimumFollowDelay { get; set; }
         public int MaximumFollowDelay { get; set; }
+        public PanelDisplayMode DisplayMode { get; set; } = PanelDisplayMode.AUTOMATIC;
+        public List<string> SelectedCharacters { get; set; } = new List<string>();
+        public bool PreferBackgroundClicks { get; set; } = true;
     }
 
     /// <summary>
@@ -125,18 +137,13 @@ namespace MultiClicker.Models
     {
         SELECT_NEXT,
         SELECT_PREVIOUS,
-        TRAVEL,
         OPTIONS,
         SIMPLE_CLICK,
         DOUBLE_CLICK,
-        SIMPLE_CLICK_NO_DELAY,
-        DOFUS_HAVENBAG,
         DOFUS_OPEN_DISCUSSION,
         GROUP_CHARACTERS,
         FILL_HDV,
         PASTE_ON_ALL_WINDOWS,
-        TOGGLE_AUTOPILOT,
-        DOFUS_AUTOPILOT_SHORTCUT,
     }
 
     /// <summary>
@@ -175,6 +182,7 @@ namespace MultiClicker.Models
     /// </summary>
     public class WindowInfo
     {
+        public IntPtr Handle { get; set; }
         public string WindowName { get; set; }
         public string CharacterName { get; set; }
         public object RelatedPanel { get; set; }
@@ -215,7 +223,7 @@ namespace MultiClicker.Models
 
             writer.WriteStartObject();
             writer.WritePropertyName("Key");
-            writer.WriteValue((int)value.Key);
+            writer.WriteValue(value.Key.ToString());
             writer.WritePropertyName("Control");
             writer.WriteValue(value.Control);
             writer.WritePropertyName("Shift");
@@ -256,7 +264,18 @@ namespace MultiClicker.Models
                 var keyCombination = new KeyCombination();
 
                 if (obj["Key"] != null)
-                    keyCombination.Key = (Keys)obj["Key"].Value<int>();
+                {
+                    var keyToken = obj["Key"];
+                    if (keyToken.Type == JTokenType.String)
+                    {
+                        Enum.TryParse(keyToken.Value<string>(), true, out Keys parsed);
+                        keyCombination.Key = parsed;
+                    }
+                    else
+                    {
+                        keyCombination.Key = (Keys)keyToken.Value<int>();
+                    }
+                }
 
                 if (obj["Control"] != null)
                     keyCombination.Control = obj["Control"].Value<bool>();

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.IO;
 using System.Threading;
 using System.Windows.Forms;
 using Tesseract;
@@ -18,8 +19,30 @@ namespace MultiClicker.Services
         private static readonly object EngineLock = new object();
         private static TesseractEngine _engine;
         private static readonly string OcrLanguage = "fra";
-        private static readonly string TessdataPath = @"tessdata";
         private static readonly int BinarizationThreshold = 140;
+
+        private static string ResolveTessdataPath()
+        {
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            var candidates = new[]
+            {
+                Path.Combine(baseDir, "tessdata"),
+                Path.Combine(baseDir, "mandatory_assets", "tessdata"),
+                Path.Combine(Directory.GetCurrentDirectory(), "tessdata")
+            };
+
+            foreach (var candidate in candidates)
+            {
+                if (Directory.Exists(candidate) &&
+                    File.Exists(Path.Combine(candidate, OcrLanguage + ".traineddata")))
+                {
+                    return candidate;
+                }
+            }
+
+            Trace.WriteLine("tessdata directory not found. Looked in: " + string.Join("; ", candidates));
+            return null;
+        }
         #endregion
 
         #region Public Properties
@@ -41,8 +64,14 @@ namespace MultiClicker.Services
                 {
                     if (_engine == null)
                     {
-                        _engine = new TesseractEngine(TessdataPath, OcrLanguage, EngineMode.Default);
-                        Trace.WriteLine("OCR Engine initialized successfully");
+                        var tessdataPath = ResolveTessdataPath();
+                        if (tessdataPath == null)
+                        {
+                            return;
+                        }
+
+                        _engine = new TesseractEngine(tessdataPath, OcrLanguage, EngineMode.Default);
+                        Trace.WriteLine($"OCR Engine initialized successfully (tessdata: {tessdataPath})");
                     }
                 }
                 catch (Exception ex)

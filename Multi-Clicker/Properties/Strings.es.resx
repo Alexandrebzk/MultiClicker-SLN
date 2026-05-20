@@ -216,20 +216,11 @@
   <data name="DOUBLE_CLICK" xml:space="preserve">
     <value>Doble Clic (Sin Retraso)</value>
   </data>
-  <data name="SIMPLE_CLICK_NO_DELAY" xml:space="preserve">
-    <value>Clic Simple (Sin Retraso)</value>
-  </data>
-  <data name="DOFUS_HAVENBAG" xml:space="preserve">
-    <value>Dofus Bolsa del Refugio</value>
-  </data>
   <data name="DOFUS_OPEN_DISCUSSION" xml:space="preserve">
     <value>Dofus Abrir Discusión</value>
   </data>
   <data name="GROUP_CHARACTERS" xml:space="preserve">
     <value>Agrupar Personajes</value>
-  </data>
-  <data name="TRAVEL" xml:space="preserve">
-    <value>Viajar</value>
   </data>
   <data name="OPTIONS" xml:space="preserve">
     <value>Opciones</value>
@@ -294,12 +285,6 @@
   <data name="PasteOnAllWindows" xml:space="preserve">
     <value>Pegar en todas las ventanas</value>
   </data>
-  <data name="Validate" xml:space="preserve">
-    <value>Validar</value>
-  </data>
-  <data name="Menu" xml:space="preserve">
-    <value>Menú</value>
-  </data>
   <data name="KeyCombinationInstruction" xml:space="preserve">
     <value> (Enter para confirmar, Escape para cancelar)</value>
   </data>
@@ -309,10 +294,46 @@
   <data name="PASTE_ON_ALL_WINDOWS" xml:space="preserve">
     <value>Pegar en Todas las Ventanas</value>
   </data>
-  <data name="TOGGLE_AUTOPILOT" xml:space="preserve">
-    <value>Alternar Piloto Automático</value>
+  <data name="ModeMenu" xml:space="preserve">
+    <value>Modo</value>
   </data>
-  <data name="DOFUS_AUTOPILOT_SHORTCUT" xml:space="preserve">
-    <value>Atajo Piloto Auto Dofus</value>
+  <data name="ModeAutomatic" xml:space="preserve">
+    <value>Automático</value>
+  </data>
+  <data name="ModeManual" xml:space="preserve">
+    <value>Manual</value>
+  </data>
+  <data name="SelectCharacters" xml:space="preserve">
+    <value>Seleccionar personajes</value>
+  </data>
+  <data name="PreferBackgroundClicks" xml:space="preserve">
+    <value>Preferir clics en segundo plano</value>
+  </data>
+  <data name="CharacterSelectionTitle" xml:space="preserve">
+    <value>Selección de personajes</value>
+  </data>
+  <data name="CharactersTitle" xml:space="preserve">
+    <value>Seleccionar los personajes a mostrar</value>
+  </data>
+  <data name="CharactersInstruction" xml:space="preserve">
+    <value>Marque las aplicaciones en ejecución que desea mostrar:</value>
+  </data>
+  <data name="SelectAll" xml:space="preserve">
+    <value>Seleccionar todo</value>
+  </data>
+  <data name="DeselectAll" xml:space="preserve">
+    <value>Deseleccionar todo</value>
+  </data>
+  <data name="Save" xml:space="preserve">
+    <value>Guardar</value>
+  </data>
+  <data name="Cancel" xml:space="preserve">
+    <value>Cancelar</value>
+  </data>
+  <data name="NoCharactersSelected" xml:space="preserve">
+    <value>Por favor seleccione al menos un personaje</value>
+  </data>
+  <data name="ErrorOpeningCharacterSelection" xml:space="preserve">
+    <value>Error al abrir la selección de personajes: {0}</value>
   </data>
 </root>

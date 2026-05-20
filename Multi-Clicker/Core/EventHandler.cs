@@ -18,7 +18,6 @@ namespace MultiClicker.Core
             try
             {
                 // Register hook service events
-                HookManagementService.ShouldOpenMenuTravel += OnTravelMenuRequested;
                 HookManagementService.ShouldOpenPositionConfiguration += OnKeyBindFormRequested;
 
                 Trace.WriteLine("Application event handlers registered successfully");
@@ -37,7 +36,6 @@ namespace MultiClicker.Core
             try
             {
                 // Unregister hook service events
-                HookManagementService.ShouldOpenMenuTravel -= OnTravelMenuRequested;
                 HookManagementService.ShouldOpenPositionConfiguration -= OnKeyBindFormRequested;
 
                 Trace.WriteLine("Application event handlers unregistered successfully");
@@ -50,24 +48,6 @@ namespace MultiClicker.Core
         #endregion
 
         #region Event Handlers
-        /// <summary>
-        /// Handles travel menu request events
-        /// </summary>
-        private static void OnTravelMenuRequested()
-        {
-            try
-            {
-                Trace.WriteLine("Travel menu requested");
-                
-                // This event will be handled by the main form
-                // The event is propagated through the service layer
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error handling travel menu request: {ex.Message}");
-            }
-        }
-
         /// <summary>
         /// Handles key bind form request events
         /// </summary>
