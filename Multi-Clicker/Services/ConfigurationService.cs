@@ -6,6 +6,7 @@ using System.Linq;
 using System.Windows.Forms;
 using MultiClicker.Models;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Linq;
 
 namespace MultiClicker.Services
@@ -19,6 +20,13 @@ namespace MultiClicker.Services
         private static Config _config;
         private static readonly string ConfigFilePath = "config.json";
         private static readonly object ConfigLock = new object();
+        private static System.Threading.Timer _saveTimer;
+        private static readonly TimeSpan SaveDebounceDelay = TimeSpan.FromMilliseconds(500);
+        private static readonly JsonSerializerSettings JsonSettings = new JsonSerializerSettings
+        {
+            Formatting = Formatting.Indented,
+            Converters = { new StringEnumConverter() }
+        };
         #endregion
 
         #region Public Properties
@@ -41,6 +49,18 @@ namespace MultiClicker.Services
         /// Indicates if key binds are currently being modified
         /// </summary>
         public static bool IsModifyingKeyBinds { get; set; } = false;
+
+        /// <summary>
+        /// Raised whenever the keybind dictionary contents change so consumers
+        /// (such as the hook service) can rebuild their lookup indices.
+        /// </summary>
+        public static event Action KeybindsChanged;
+
+        internal static void RaiseKeybindsChanged()
+        {
+            try { KeybindsChanged?.Invoke(); }
+            catch (Exception ex) { Trace.WriteLine($"Error raising KeybindsChanged: {ex.Message}"); }
+        }
         #endregion
 
         #region Public Methods
@@ -53,43 +73,88 @@ namespace MultiClicker.Services
             {
                 try
                 {
+                    bool createdDefault = false;
                     if (File.Exists(ConfigFilePath))
                     {
                         LoadFromFile();
+                        if (_config == null)
+                        {
+                            CreateDefaultConfig();
+                            createdDefault = true;
+                        }
                     }
                     else
                     {
                         CreateDefaultConfig();
+                        createdDefault = true;
                     }
 
-                    ValidateAndFixConfig();
-                    SaveConfig();
+                    var changed = ValidateAndFixConfig();
+                    if (createdDefault || changed)
+                    {
+                        SaveConfigImmediateInternal();
+                    }
                 }
                 catch (Exception ex)
                 {
                     Trace.WriteLine($"Error loading configuration: {ex.Message}");
                     CreateDefaultConfig();
-                    SaveConfig();
+                    SaveConfigImmediateInternal();
                 }
             }
         }
 
         /// <summary>
-        /// Saves current configuration to file
+        /// Schedules a debounced save to file (coalesces rapid edits).
         /// </summary>
         public static void SaveConfig()
         {
             lock (ConfigLock)
             {
-                try
+                if (_saveTimer == null)
                 {
-                    var configJson = JsonConvert.SerializeObject(_config, Formatting.Indented);
-                    File.WriteAllText(ConfigFilePath, configJson);
+                    _saveTimer = new System.Threading.Timer(_ => SaveConfigImmediate(), null,
+                        SaveDebounceDelay, System.Threading.Timeout.InfiniteTimeSpan);
                 }
-                catch (Exception ex)
+                else
                 {
-                    Trace.WriteLine($"Error saving configuration: {ex.Message}");
+                    _saveTimer.Change(SaveDebounceDelay, System.Threading.Timeout.InfiniteTimeSpan);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Saves configuration to disk immediately, flushing any pending debounced save.
+        /// </summary>
+        public static void SaveConfigImmediate()
+        {
+            lock (ConfigLock)
+            {
+                _saveTimer?.Change(System.Threading.Timeout.InfiniteTimeSpan, System.Threading.Timeout.InfiniteTimeSpan);
+                SaveConfigImmediateInternal();
+            }
+        }
+
+        private static void SaveConfigImmediateInternal()
+        {
+            try
+            {
+                if (_config == null) return;
+                var configJson = JsonConvert.SerializeObject(_config, JsonSettings);
+                var tmp = ConfigFilePath + ".tmp";
+                File.WriteAllText(tmp, configJson);
+                if (File.Exists(ConfigFilePath))
+                {
+                    File.Replace(tmp, ConfigFilePath, ConfigFilePath + ".bak");
+                }
+                else
+                {
+                    File.Move(tmp, ConfigFilePath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error saving configuration: {ex.Message}");
             }
         }
 
@@ -102,6 +167,7 @@ namespace MultiClicker.Services
             {
                 _config.Keybinds[trigger] = keyCombination;
                 SaveConfig();
+                RaiseKeybindsChanged();
             }
         }
 
@@ -136,7 +202,7 @@ namespace MultiClicker.Services
             
             try
             {
-                _config = JsonConvert.DeserializeObject<Config>(configContent);
+                _config = JsonConvert.DeserializeObject<Config>(configContent, JsonSettings);
                 Trace.WriteLine("Configuration loaded successfully");
             }
             catch (Exception ex)
@@ -157,7 +223,9 @@ namespace MultiClicker.Services
                 {
                     GameVersion = "3.0.45.37",
                     MinimumFollowDelay = 200,
-                    MaximumFollowDelay = 400
+                    MaximumFollowDelay = 400,
+                    DisplayMode = PanelDisplayMode.AUTOMATIC,
+                    SelectedCharacters = new List<string>()
                 },
                 Panels = new Dictionary<string, PanelConfig>(),
                 Positions = new Dictionary<TRIGGERS_POSITIONS, Position>(),
@@ -176,42 +244,41 @@ namespace MultiClicker.Services
                 { TRIGGERS.SELECT_PREVIOUS, new KeyCombination(Keys.F2) },
                 { TRIGGERS.SIMPLE_CLICK, new KeyCombination(Keys.XButton1) },
                 { TRIGGERS.DOUBLE_CLICK, new KeyCombination(Keys.XButton2) },
-                { TRIGGERS.SIMPLE_CLICK_NO_DELAY, new KeyCombination(Keys.MButton) },
-                { TRIGGERS.DOFUS_HAVENBAG, new KeyCombination(Keys.H) },
                 { TRIGGERS.DOFUS_OPEN_DISCUSSION, new KeyCombination(Keys.Tab) },
                 { TRIGGERS.GROUP_CHARACTERS, new KeyCombination(Keys.F5) },
-                { TRIGGERS.TRAVEL, new KeyCombination(Keys.F6) },
                 { TRIGGERS.OPTIONS, new KeyCombination(Keys.F12) },
-                { TRIGGERS.TOGGLE_AUTOPILOT, new KeyCombination(Keys.F8) }, // F8 - triggers autopilot function
-                { TRIGGERS.DOFUS_AUTOPILOT_SHORTCUT, new KeyCombination(Keys.W, true, false, false, false, false, false, false, false) }, // Ctrl + W - actual game command
                 { TRIGGERS.FILL_HDV, new KeyCombination(Keys.Oem7, false, false, false, true, false, false, false, false) },
                 { TRIGGERS.PASTE_ON_ALL_WINDOWS, new KeyCombination(Keys.V, true, false, true, false, false, false, false, false) }
             };
         }
 
         /// <summary>
-        /// Validates and fixes any missing configuration entries
+        /// Validates and fixes any missing configuration entries. Returns true if any change was applied.
         /// </summary>
-        private static void ValidateAndFixConfig()
+        private static bool ValidateAndFixConfig()
         {
+            bool changed = false;
+
             // Ensure keybinds exist
             if (_config.Keybinds == null || _config.Keybinds.Count == 0)
             {
                 _config.Keybinds = GetDefaultKeybinds();
+                changed = true;
             }
             else
             {
-                ValidateKeybinds();
+                changed |= ValidateKeybinds();
             }
 
             // Ensure positions exist
             if (_config.Positions == null)
             {
                 _config.Positions = GetDefaultPositions();
+                changed = true;
             }
             else
             {
-                ValidatePositions();
+                changed |= ValidatePositions();
             }
 
             // Ensure general config exists
@@ -223,29 +290,46 @@ namespace MultiClicker.Services
                     MinimumFollowDelay = 200,
                     MaximumFollowDelay = 400
                 };
+                changed = true;
             }
 
             // Ensure panels dictionary exists
             if (_config.Panels == null)
             {
                 _config.Panels = new Dictionary<string, PanelConfig>();
+                changed = true;
             }
+
+            return changed;
         }
 
         /// <summary>
-        /// Validates and adds missing keybind entries
+        /// Validates and adds missing keybind entries. Returns true if any change was applied.
         /// </summary>
-        private static void ValidateKeybinds()
+        private static bool ValidateKeybinds()
         {
+            bool changed = false;
             var defaultKeybinds = GetDefaultKeybinds();
-            
+
+            // Remove keybinds for triggers that no longer exist in the current enum
+            var validTriggers = new HashSet<TRIGGERS>((TRIGGERS[])Enum.GetValues(typeof(TRIGGERS)));
+            var toRemove = _config.Keybinds.Keys.Where(k => !validTriggers.Contains(k)).ToList();
+            foreach (var k in toRemove)
+            {
+                _config.Keybinds.Remove(k);
+                changed = true;
+            }
+
             foreach (var defaultKeybind in defaultKeybinds)
             {
                 if (!_config.Keybinds.ContainsKey(defaultKeybind.Key))
                 {
                     _config.Keybinds.Add(defaultKeybind.Key, defaultKeybind.Value);
+                    changed = true;
                 }
             }
+
+            return changed;
         }
 
         /// <summary>
@@ -264,10 +348,11 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
-        /// Validates and adds missing position entries
+        /// Validates and adds missing position entries. Returns true if any change was applied.
         /// </summary>
-        private static void ValidatePositions()
+        private static bool ValidatePositions()
         {
+            bool changed = false;
             var requiredPositions = new[]
             {
                 TRIGGERS_POSITIONS.SELL_CURRENT_MODE,
@@ -282,8 +367,11 @@ namespace MultiClicker.Services
                 if (!_config.Positions.ContainsKey(position))
                 {
                     _config.Positions.Add(position, new Position { X = 0, Y = 0, Width = 0, Height = 0 });
+                    changed = true;
                 }
             }
+
+            return changed;
         }
         #endregion
     }

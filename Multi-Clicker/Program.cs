@@ -140,7 +140,10 @@ namespace MultiClicker
                     UnhookWindowsHookEx(_keyboardHookID);
                     _keyboardHookID = IntPtr.Zero;
                 }
-                
+
+                // Shutdown hook service (cancels reconciliation timer, clears state)
+                HookManagementService.Shutdown();
+
                 // Shutdown application manager
                 ApplicationManager.Instance.Shutdown();
                 

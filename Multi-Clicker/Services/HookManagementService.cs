@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -7,12 +8,23 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using MultiClicker.Models;
-using MultiClicker.Services;
 
 namespace MultiClicker.Services
 {
     /// <summary>
-    /// Service responsible for managing global hooks and input handling
+    /// Service responsible for managing global hooks and input handling.
+    ///
+    /// Design notes (post-audit):
+    ///  * Input state (KeysPressed / mouse button flags) is always updated for
+    ///    key/mouse-up events, regardless of foreground window, so that focus
+    ///    changes can never leave a key "stuck" pressed.
+    ///  * Trigger evaluation is edge-triggered: a key-down only fires keybinds
+    ///    whose primary key matches the key that just went down; mouse-down
+    ///    only fires keybinds whose required mouse button matches the event.
+    ///  * A periodic reconciliation pass uses GetAsyncKeyState to prune any
+    ///    state that drifted out of sync with the OS (lost up-events, etc.).
+    ///  * Per-event work inside the hook callback is kept minimal; all heavy
+    ///    actions are dispatched via Task.Run to avoid LowLevelHooksTimeout.
     /// </summary>
     public static class HookManagementService
     {
@@ -33,36 +45,7 @@ namespace MultiClicker.Services
         static extern short GetKeyState(int nVirtKey);
 
         [DllImport("user32.dll")]
-        private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
-
-        // Advanced input simulation APIs
-        [DllImport("user32.dll", SetLastError = true)]
-        private static extern bool SetCursorPos(int x, int y);
-
-        [DllImport("user32.dll")]
-        private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
-
-        [DllImport("user32.dll")]
-        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-
-        [DllImport("kernel32.dll")]
-        private static extern uint GetCurrentThreadId();
-
-        [DllImport("user32.dll")]
-        private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-
-        [DllImport("user32.dll")]
-        private static extern bool BringWindowToTop(IntPtr hWnd);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr SetActiveWindow(IntPtr hWnd);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr SetFocus(IntPtr hWnd);
-
-        // Hardware scan code simulation
-        [DllImport("user32.dll")]
-        private static extern uint MapVirtualKey(uint uCode, uint uMapType);
+        private static extern short GetAsyncKeyState(int vKey);
         #endregion
 
         #region Constants and Enums
@@ -84,14 +67,28 @@ namespace MultiClicker.Services
         public const int WH_KEYBOARD_LL = 13;
         public const int WM_KEYDOWN = 0x0100;
         public const int WM_KEYUP = 0x0101;
-        
-        // Advanced input constants
-        private const uint KEYEVENTF_SCANCODE = 0x0008;
-        private const uint KEYEVENTF_KEYUP = 0x0002;
-        private const uint SWP_NOSIZE = 0x0001;
-        private const uint SWP_NOMOVE = 0x0002;
-        private const uint SWP_SHOWWINDOW = 0x0040;
-        private static readonly IntPtr HWND_TOP = new IntPtr(0);
+        public const int WM_SYSKEYDOWN = 0x0104;
+        public const int WM_SYSKEYUP = 0x0105;
+
+        // Virtual key codes used by reconciliation.
+        private const int VK_LBUTTON = 0x01;
+        private const int VK_RBUTTON = 0x02;
+        private const int VK_MBUTTON = 0x04;
+        private const int VK_XBUTTON1 = 0x05;
+        private const int VK_XBUTTON2 = 0x06;
+        private const int VK_SHIFT = 0x10;
+        private const int VK_CONTROL = 0x11;
+        private const int VK_MENU = 0x12; // Alt
+        private const int VK_LSHIFT = 0xA0;
+        private const int VK_RSHIFT = 0xA1;
+        private const int VK_LCONTROL = 0xA2;
+        private const int VK_RCONTROL = 0xA3;
+        private const int VK_LMENU = 0xA4;
+        private const int VK_RMENU = 0xA5;
+
+        // Threshold (ms) above which a hook callback is considered too slow
+        // (Windows LowLevelHooksTimeout defaults to ~300 ms; warn well before).
+        private const long HookCallbackWarnThresholdMs = 50;
         #endregion
 
         #region Structures
@@ -107,20 +104,38 @@ namespace MultiClicker.Services
         #endregion
 
         #region Private Fields
-        private static readonly Dictionary<TRIGGERS, (Action<object> action, TimeSpan minimumCooldown)> KeyActions = new Dictionary<TRIGGERS, (Action<object>, TimeSpan)>();
+        private static readonly Dictionary<TRIGGERS, (Action<object> action, TimeSpan minimumCooldown)> KeyActions =
+            new Dictionary<TRIGGERS, (Action<object>, TimeSpan)>();
+
+        // Input state - all access guarded by InputLock.
         private static readonly HashSet<Keys> KeysPressed = new HashSet<Keys>();
         private static readonly HashSet<MouseMessages> MouseButtonsPressed = new HashSet<MouseMessages>();
-        private static bool _xButton1Pressed = false;
-        private static bool _xButton2Pressed = false;
+        private static bool _xButton1Pressed;
+        private static bool _xButton2Pressed;
+        private static readonly object InputLock = new object();
+
         private static readonly Random Random = new Random();
         private static POINT _cursorPosition;
-        private static readonly Dictionary<TRIGGERS, DateTime> _lastExecutionTime = new Dictionary<TRIGGERS, DateTime>();
-        // Track which triggers are currently running to prevent reentrancy
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<TRIGGERS, bool> _runningTriggers = new System.Collections.Concurrent.ConcurrentDictionary<TRIGGERS, bool>();
+
+        // Cooldown / reentrancy bookkeeping - safe to access from worker threads.
+        private static readonly ConcurrentDictionary<TRIGGERS, DateTime> _lastExecutionTime =
+            new ConcurrentDictionary<TRIGGERS, DateTime>();
+        private static readonly ConcurrentDictionary<TRIGGERS, DateTime> _runningTriggers =
+            new ConcurrentDictionary<TRIGGERS, DateTime>();
+
+        // Pre-computed keybind indices for O(1) edge-triggered lookup.
+        // Rebuilt on init and whenever ConfigurationService.KeybindsChanged fires.
+        private static readonly object KeybindIndexLock = new object();
+        private static Dictionary<Keys, List<KeyValuePair<TRIGGERS, KeyCombination>>> _keybindsByKey =
+            new Dictionary<Keys, List<KeyValuePair<TRIGGERS, KeyCombination>>>();
+        private static Dictionary<MouseMessages, List<KeyValuePair<TRIGGERS, KeyCombination>>> _keybindsByMouse =
+            new Dictionary<MouseMessages, List<KeyValuePair<TRIGGERS, KeyCombination>>>();
+
+        private static System.Threading.Timer _reconcileTimer;
+        private static volatile bool _initialized;
         #endregion
 
         #region Public Events
-        public static event Action ShouldOpenMenuTravel;
         public static event Action ShouldOpenPositionConfiguration;
         #endregion
 
@@ -131,31 +146,99 @@ namespace MultiClicker.Services
         #region Public Methods
         public static void Initialize()
         {
+            if (_initialized) return;
             InitializeKeyActions();
+            RebuildKeybindIndex();
+            ConfigurationService.KeybindsChanged += RebuildKeybindIndex;
+
+            // Periodic reconciliation against OS state every 500 ms.
+            _reconcileTimer = new System.Threading.Timer(_ => ReconcileInputState(),
+                null, TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(500));
+            _initialized = true;
+        }
+
+        public static void Shutdown()
+        {
+            try
+            {
+                ConfigurationService.KeybindsChanged -= RebuildKeybindIndex;
+                _reconcileTimer?.Dispose();
+                _reconcileTimer = null;
+                ClearInputState();
+                _initialized = false;
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error during HookManagementService shutdown: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Debug helper that dumps the current tracked input state to the trace log.
+        /// </summary>
+        public static void DumpInputState()
+        {
+            lock (InputLock)
+            {
+                Trace.WriteLine($"[HookState] Keys: [{string.Join(", ", KeysPressed)}] " +
+                                $"Mouse: [{string.Join(", ", MouseButtonsPressed)}] " +
+                                $"X1={_xButton1Pressed} X2={_xButton2Pressed} " +
+                                $"Running: [{string.Join(", ", _runningTriggers.Keys)}]");
+            }
         }
 
         public static IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
-            if (nCode < 0 || !WindowManagementService.IsRelatedHandle(GetForegroundWindow()))
-                return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
-
+            var sw = Stopwatch.StartNew();
             try
             {
-                var key = (Keys)Marshal.ReadInt32(lParam);
-                UpdateModifierKeys();
+                if (nCode < 0)
+                    return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
 
-                if (wParam == (IntPtr)WM_KEYDOWN)
+                var msg = wParam.ToInt32();
+                bool isDown = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+                bool isUp = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+                if (!isDown && !isUp)
+                    return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+
+                var key = (Keys)Marshal.ReadInt32(lParam);
+
+                // Always reconcile modifiers and update key state, even when the
+                // foreground window is not a tracked one. This guarantees that
+                // key-up events are never lost across focus changes.
+                bool wasNewPress;
+                lock (InputLock)
                 {
-                    HandleKeyDown(key);
+                    UpdateModifierKeysLocked();
+                    if (isDown)
+                        wasNewPress = KeysPressed.Add(key);
+                    else
+                    {
+                        KeysPressed.Remove(key);
+                        wasNewPress = false;
+                    }
                 }
-                else if (wParam == (IntPtr)WM_KEYUP)
+
+                // Only evaluate triggers when the foreground window is one we care
+                // about, and only on the *initial* down event (no auto-repeat).
+                if (isDown && wasNewPress)
                 {
-                    HandleKeyUp(key);
+                    var fg = GetForegroundWindow();
+                    if (WindowManagementService.IsRelatedHandle(fg))
+                    {
+                        EvaluateKeyTriggers(key);
+                    }
                 }
             }
             catch (Exception ex)
             {
                 Trace.WriteLine($"Error in keyboard hook callback: {ex.Message}");
+            }
+            finally
+            {
+                sw.Stop();
+                if (sw.ElapsedMilliseconds > HookCallbackWarnThresholdMs)
+                    Trace.WriteLine($"[Perf] Keyboard hook took {sw.ElapsedMilliseconds} ms");
             }
 
             return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
@@ -163,55 +246,158 @@ namespace MultiClicker.Services
 
         public static IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
-            if (nCode < 0 || !WindowManagementService.IsRelatedHandle(GetForegroundWindow()))
-                return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
-
+            var sw = Stopwatch.StartNew();
             try
             {
-                GetCursorPos(out _cursorPosition);
-                var hWnd = WindowFromPoint(_cursorPosition);
-                var message = (MouseMessages)wParam;
-                UpdateModifierKeys();
-
-                if (!WindowManagementService.WindowHandles.ContainsKey(hWnd))
+                if (nCode < 0)
                     return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
 
-                HandleMouseMessage(message, lParam);
+                var message = (MouseMessages)wParam.ToInt32();
+
+                // Fast path for high-frequency events that carry no actionable
+                // state change. WM_MOUSEMOVE arrives constantly and must do as
+                // little as possible to avoid hook timeouts.
+                if (message == MouseMessages.WM_MOUSEMOVE || message == MouseMessages.WM_MOUSEWHEEL)
+                {
+                    return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+                }
+
+                // Always update mouse button state, regardless of foreground.
+                // This prevents losing UP events when the user drags off a
+                // tracked window before releasing.
+                lock (InputLock)
+                {
+                    UpdateMouseButtonStateLocked(message, lParam);
+                    UpdateModifierKeysLocked();
+                }
+
+                bool isMouseDown =
+                    message == MouseMessages.WM_LBUTTONDOWN ||
+                    message == MouseMessages.WM_RBUTTONDOWN ||
+                    message == MouseMessages.WM_MBUTTONDOWN ||
+                    message == MouseMessages.WM_XBUTTONDOWN;
+
+                if (!isMouseDown)
+                    return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+
+                // Update cursor position lazily (only when a click event arrives).
+                GetCursorPos(out _cursorPosition);
+                var hWnd = WindowFromPoint(_cursorPosition);
+
+                var fg = GetForegroundWindow();
+                bool fgRelated = WindowManagementService.IsRelatedHandle(fg);
+                bool hoverRelated = WindowManagementService.WindowHandles.ContainsKey(hWnd);
+
+                // Special right-click handler for keybind position picker - this
+                // intentionally fires regardless of foreground.
+                if (message == MouseMessages.WM_RBUTTONDOWN && ConfigurationService.IsModifyingKeyBinds)
+                {
+                    PositionConfigurationForm.choosePosition();
+                }
+
+                if (fgRelated && hoverRelated)
+                {
+                    EvaluateMouseTriggers(message);
+                }
             }
             catch (Exception ex)
             {
                 Trace.WriteLine($"Error in mouse hook callback: {ex.Message}");
+            }
+            finally
+            {
+                sw.Stop();
+                if (sw.ElapsedMilliseconds > HookCallbackWarnThresholdMs)
+                    Trace.WriteLine($"[Perf] Mouse hook took {sw.ElapsedMilliseconds} ms");
             }
 
             return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
         }
         #endregion
 
-        #region Private Methods
-        private static bool ExecuteWithCooldown(TRIGGERS trigger, (Action<object> action, TimeSpan minimumCooldown) actionData)
+        #region Trigger evaluation
+        private static void EvaluateKeyTriggers(Keys pressedKey)
         {
-            var now = DateTime.Now;
-            
-            // If trigger is already running, do not start it again
-            if (_runningTriggers.TryGetValue(trigger, out bool isRunning) && isRunning)
+            List<KeyValuePair<TRIGGERS, KeyCombination>> candidates;
+            lock (KeybindIndexLock)
             {
-                Trace.WriteLine($"Trigger {trigger} is already running, skipping execution.");
-                return false;
+                if (!_keybindsByKey.TryGetValue(pressedKey, out candidates) || candidates.Count == 0)
+                    return;
+                // Copy to avoid holding the lock during evaluation.
+                candidates = new List<KeyValuePair<TRIGGERS, KeyCombination>>(candidates);
             }
 
-            if (_lastExecutionTime.ContainsKey(trigger))
+            foreach (var kvp in candidates)
             {
-                var timeSinceLastExecution = now - _lastExecutionTime[trigger];
-                if (timeSinceLastExecution < actionData.minimumCooldown)
+                // Keyboard-only triggers fire on key-down. Keybinds that *also*
+                // require a mouse button are handled on the mouse-down path.
+                if (kvp.Value.HasMouseButtons) continue;
+
+                if (IsKeyCombinationPressed(kvp.Value))
                 {
-                    return false;
+                    Trace.WriteLine($"Key combination triggered: {kvp.Key} -> {kvp.Value}");
+                    if (KeyActions.TryGetValue(kvp.Key, out var actionData))
+                    {
+                        ExecuteWithCooldown(kvp.Key, actionData);
+                    }
                 }
             }
-            
-            _lastExecutionTime[trigger] = now;
+        }
 
-            // Mark trigger as running
-            _runningTriggers[trigger] = true;
+        private static void EvaluateMouseTriggers(MouseMessages downMessage)
+        {
+            List<KeyValuePair<TRIGGERS, KeyCombination>> candidates;
+            lock (KeybindIndexLock)
+            {
+                if (!_keybindsByMouse.TryGetValue(downMessage, out candidates) || candidates.Count == 0)
+                    return;
+                candidates = new List<KeyValuePair<TRIGGERS, KeyCombination>>(candidates);
+            }
+
+            foreach (var kvp in candidates)
+            {
+                if (IsKeyCombinationPressed(kvp.Value))
+                {
+                    Trace.WriteLine($"Click combination triggered: {kvp.Key} -> {kvp.Value}");
+                    if (KeyActions.TryGetValue(kvp.Key, out var actionData))
+                    {
+                        ExecuteWithCooldown(kvp.Key, actionData);
+                    }
+                }
+            }
+        }
+        #endregion
+
+        #region Cooldown & dispatch
+        private static bool ExecuteWithCooldown(TRIGGERS trigger, (Action<object> action, TimeSpan minimumCooldown) actionData)
+        {
+            var now = DateTime.UtcNow;
+
+            // Reentrancy guard with a stale-flag watchdog. If a trigger was marked
+            // running more than 10x its cooldown ago, assume the task died or
+            // failed to schedule and force-clear so the user is not locked out.
+            if (_runningTriggers.TryGetValue(trigger, out var startedAt))
+            {
+                var stuckThreshold = TimeSpan.FromTicks(Math.Max(actionData.minimumCooldown.Ticks * 10,
+                    TimeSpan.FromSeconds(5).Ticks));
+                if (now - startedAt < stuckThreshold)
+                {
+                    Trace.WriteLine($"Trigger {trigger} is already running, skipping execution.");
+                    return false;
+                }
+
+                Trace.WriteLine($"Trigger {trigger} marked running too long; clearing stale flag.");
+                _runningTriggers.TryRemove(trigger, out _);
+            }
+
+            if (_lastExecutionTime.TryGetValue(trigger, out var last))
+            {
+                if (now - last < actionData.minimumCooldown)
+                    return false;
+            }
+
+            _lastExecutionTime[trigger] = now;
+            _runningTriggers[trigger] = now;
 
             Task.Run(() =>
             {
@@ -225,26 +411,24 @@ namespace MultiClicker.Services
                 }
                 finally
                 {
-                    // Clear running flag when finished
-                    _runningTriggers[trigger] = false;
+                    _runningTriggers.TryRemove(trigger, out _);
                 }
             });
 
             return true;
         }
+        #endregion
 
+        #region State helpers (must be called under InputLock unless noted)
         private static void InitializeKeyActions()
         {
             KeyActions[TRIGGERS.SELECT_NEXT] = (obj => PanelManagementService.SelectNextPanel(), TimeSpan.FromMilliseconds(100));
             KeyActions[TRIGGERS.SELECT_PREVIOUS] = (obj => PanelManagementService.SelectPreviousPanel(), TimeSpan.FromMilliseconds(100));
             KeyActions[TRIGGERS.SIMPLE_CLICK] = (obj => WindowManagementService.PerformWindowClick(_cursorPosition, false), TimeSpan.FromMilliseconds(100));
-            KeyActions[TRIGGERS.SIMPLE_CLICK_NO_DELAY] = (obj => WindowManagementService.PerformWindowClick(_cursorPosition, true), TimeSpan.FromMilliseconds(300));
             KeyActions[TRIGGERS.DOUBLE_CLICK] = (obj => WindowManagementService.PerformWindowDoubleClick(_cursorPosition), TimeSpan.FromMilliseconds(100));
             KeyActions[TRIGGERS.GROUP_CHARACTERS] = (obj => WindowManagementService.GroupCharacters(), TimeSpan.FromMilliseconds(1000));
-            KeyActions[TRIGGERS.TRAVEL] = (obj => ShouldOpenMenuTravel?.Invoke(), TimeSpan.FromMilliseconds(1000));
             KeyActions[TRIGGERS.OPTIONS] = (obj => ShouldOpenPositionConfiguration?.Invoke(), TimeSpan.FromMilliseconds(1000));
             KeyActions[TRIGGERS.PASTE_ON_ALL_WINDOWS] = (obj => HandlePasteOnAllWindows(), TimeSpan.FromMilliseconds(500));
-            KeyActions[TRIGGERS.TOGGLE_AUTOPILOT] = (obj => HandleToggleAutoPilot(), TimeSpan.FromMilliseconds(1000));
             KeyActions[TRIGGERS.FILL_HDV] = (obj =>
             {
                 Trace.WriteLine("Starting price analysis");
@@ -254,169 +438,203 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
-        /// Updates the state of modifier keys
+        /// Synchronises tracked modifier state with the OS, treating L/R variants
+        /// independently so a missed up-event on one side cannot leave the other
+        /// side stuck.
         /// </summary>
-        private static void UpdateModifierKeys()
+        private static void UpdateModifierKeysLocked()
         {
-            var isAltPressed = (GetKeyState(0x12) & 0x8000) != 0;
-            var isCtrlPressed = (GetKeyState(0x11) & 0x8000) != 0;
-            var isShiftPressed = (GetKeyState(0x10) & 0x8000) != 0;
+            SetKeyState(Keys.LControlKey, (GetKeyState(VK_LCONTROL) & 0x8000) != 0);
+            SetKeyState(Keys.RControlKey, (GetKeyState(VK_RCONTROL) & 0x8000) != 0);
+            SetKeyState(Keys.LShiftKey, (GetKeyState(VK_LSHIFT) & 0x8000) != 0);
+            SetKeyState(Keys.RShiftKey, (GetKeyState(VK_RSHIFT) & 0x8000) != 0);
+            SetKeyState(Keys.LMenu, (GetKeyState(VK_LMENU) & 0x8000) != 0);
+            SetKeyState(Keys.RMenu, (GetKeyState(VK_RMENU) & 0x8000) != 0);
 
-            if (isAltPressed) KeysPressed.Add(Keys.Alt); else KeysPressed.Remove(Keys.Alt);
-            if (isCtrlPressed) KeysPressed.Add(Keys.LControlKey); else KeysPressed.Remove(Keys.LControlKey);
-            if (isShiftPressed) KeysPressed.Add(Keys.LShiftKey); else KeysPressed.Remove(Keys.LShiftKey);
-        }        private static bool IsKeyCombinationPressed(KeyCombination combination)
+            // Legacy "Keys.Alt" flag kept for any code that still inspects it.
+            SetKeyState(Keys.Alt, (GetKeyState(VK_MENU) & 0x8000) != 0);
+        }
+
+        private static void SetKeyState(Keys key, bool pressed)
+        {
+            if (pressed) KeysPressed.Add(key);
+            else KeysPressed.Remove(key);
+        }
+
+        private static void UpdateMouseButtonStateLocked(MouseMessages message, IntPtr lParam)
+        {
+            switch (message)
+            {
+                case MouseMessages.WM_LBUTTONDOWN: MouseButtonsPressed.Add(MouseMessages.WM_LBUTTONDOWN); break;
+                case MouseMessages.WM_LBUTTONUP: MouseButtonsPressed.Remove(MouseMessages.WM_LBUTTONDOWN); break;
+                case MouseMessages.WM_RBUTTONDOWN: MouseButtonsPressed.Add(MouseMessages.WM_RBUTTONDOWN); break;
+                case MouseMessages.WM_RBUTTONUP: MouseButtonsPressed.Remove(MouseMessages.WM_RBUTTONDOWN); break;
+                case MouseMessages.WM_MBUTTONDOWN: MouseButtonsPressed.Add(MouseMessages.WM_MBUTTONDOWN); break;
+                case MouseMessages.WM_MBUTTONUP: MouseButtonsPressed.Remove(MouseMessages.WM_MBUTTONDOWN); break;
+                case MouseMessages.WM_XBUTTONDOWN: SetXButtonStateLocked(lParam, true); break;
+                case MouseMessages.WM_XBUTTONUP: SetXButtonStateLocked(lParam, false); break;
+            }
+        }
+
+        private static void SetXButtonStateLocked(IntPtr lParam, bool isPressed)
+        {
+            var hookStruct = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+            var xButton = (int)(hookStruct.mouseData >> 16);
+            if (xButton == 1) _xButton1Pressed = isPressed;
+            else if (xButton == 2) _xButton2Pressed = isPressed;
+        }
+
+        /// <summary>
+        /// Reconciles tracked state with hardware state via GetAsyncKeyState.
+        /// Removes any key/mouse-button entries whose real state is "up" - this
+        /// is the safety net for lost up-events under load, UAC, or focus changes.
+        /// </summary>
+        private static void ReconcileInputState()
+        {
+            try
+            {
+                lock (InputLock)
+                {
+                    UpdateModifierKeysLocked();
+
+                    // Prune any non-modifier keys that the OS says are no longer down.
+                    var stale = new List<Keys>();
+                    foreach (var k in KeysPressed)
+                    {
+                        if (IsModifierKey(k)) continue;
+                        if ((GetAsyncKeyState((int)k) & 0x8000) == 0)
+                            stale.Add(k);
+                    }
+                    foreach (var k in stale) KeysPressed.Remove(k);
+
+                    // Mouse buttons.
+                    PruneMouseButton(MouseMessages.WM_LBUTTONDOWN, VK_LBUTTON);
+                    PruneMouseButton(MouseMessages.WM_RBUTTONDOWN, VK_RBUTTON);
+                    PruneMouseButton(MouseMessages.WM_MBUTTONDOWN, VK_MBUTTON);
+                    if (_xButton1Pressed && (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) == 0) _xButton1Pressed = false;
+                    if (_xButton2Pressed && (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) == 0) _xButton2Pressed = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error reconciling input state: {ex.Message}");
+            }
+        }
+
+        private static void PruneMouseButton(MouseMessages msg, int vk)
+        {
+            if (MouseButtonsPressed.Contains(msg) && (GetAsyncKeyState(vk) & 0x8000) == 0)
+                MouseButtonsPressed.Remove(msg);
+        }
+
+        private static bool IsModifierKey(Keys k)
+        {
+            return k == Keys.LControlKey || k == Keys.RControlKey
+                || k == Keys.LShiftKey || k == Keys.RShiftKey
+                || k == Keys.LMenu || k == Keys.RMenu
+                || k == Keys.Alt || k == Keys.Control || k == Keys.Shift;
+        }
+
+        private static void ClearInputState()
+        {
+            lock (InputLock)
+            {
+                KeysPressed.Clear();
+                MouseButtonsPressed.Clear();
+                _xButton1Pressed = false;
+                _xButton2Pressed = false;
+            }
+        }
+        #endregion
+
+        #region Combination matching
+        private static bool IsKeyCombinationPressed(KeyCombination combination)
         {
             if (combination.IsEmpty) return false;
 
-            // Check keyboard modifiers and key
-            bool controlPressed = combination.Control && (KeysPressed.Contains(Keys.LControlKey) || KeysPressed.Contains(Keys.RControlKey));
-            bool shiftPressed = combination.Shift && (KeysPressed.Contains(Keys.LShiftKey) || KeysPressed.Contains(Keys.RShiftKey));
-            bool altPressed = combination.Alt && (KeysPressed.Contains(Keys.LMenu) || KeysPressed.Contains(Keys.RMenu));
-            bool keyPressed = combination.Key == Keys.None || KeysPressed.Contains(combination.Key);
-
-            // Check mouse buttons
-            bool leftMousePressed = !combination.LeftMouseButton || MouseButtonsPressed.Contains(MouseMessages.WM_LBUTTONDOWN);
-            bool rightMousePressed = !combination.RightMouseButton || MouseButtonsPressed.Contains(MouseMessages.WM_RBUTTONDOWN);
-            bool middleMousePressed = !combination.MiddleMouseButton || MouseButtonsPressed.Contains(MouseMessages.WM_MBUTTONDOWN);
-            bool xButton1Pressed = !combination.XButton1 || _xButton1Pressed;
-            bool xButton2Pressed = !combination.XButton2 || _xButton2Pressed;
-
-            // If no modifiers required, only check the key and mouse buttons
-            if (!combination.Control && !combination.Shift && !combination.Alt)
+            lock (InputLock)
             {
-                return keyPressed && leftMousePressed && rightMousePressed && middleMousePressed && xButton1Pressed && xButton2Pressed;
+                bool keyPressed = combination.Key == Keys.None || KeysPressed.Contains(combination.Key);
+
+                bool ctrlDown = KeysPressed.Contains(Keys.LControlKey) || KeysPressed.Contains(Keys.RControlKey);
+                bool shiftDown = KeysPressed.Contains(Keys.LShiftKey) || KeysPressed.Contains(Keys.RShiftKey);
+                bool altDown = KeysPressed.Contains(Keys.LMenu) || KeysPressed.Contains(Keys.RMenu) || KeysPressed.Contains(Keys.Alt);
+
+                // Required modifiers must be down; non-required modifiers must NOT be down
+                // (so e.g. plain "F1" does not fire when Ctrl+F1 is the actual press).
+                if (combination.Control != ctrlDown) return false;
+                if (combination.Shift != shiftDown) return false;
+                if (combination.Alt != altDown) return false;
+
+                bool leftOk = !combination.LeftMouseButton || MouseButtonsPressed.Contains(MouseMessages.WM_LBUTTONDOWN);
+                bool rightOk = !combination.RightMouseButton || MouseButtonsPressed.Contains(MouseMessages.WM_RBUTTONDOWN);
+                bool midOk = !combination.MiddleMouseButton || MouseButtonsPressed.Contains(MouseMessages.WM_MBUTTONDOWN);
+                bool x1Ok = !combination.XButton1 || _xButton1Pressed;
+                bool x2Ok = !combination.XButton2 || _xButton2Pressed;
+
+                return keyPressed && leftOk && rightOk && midOk && x1Ok && x2Ok;
             }
-
-            // Check that all required modifiers are pressed and no extra modifiers
-            bool controlMatch = combination.Control ? controlPressed : !KeysPressed.Contains(Keys.LControlKey) && !KeysPressed.Contains(Keys.RControlKey);
-            bool shiftMatch = combination.Shift ? shiftPressed : !KeysPressed.Contains(Keys.LShiftKey) && !KeysPressed.Contains(Keys.RShiftKey);
-            bool altMatch = combination.Alt ? altPressed : !KeysPressed.Contains(Keys.LMenu) && !KeysPressed.Contains(Keys.RMenu);
-
-            return keyPressed && controlMatch && shiftMatch && altMatch && leftMousePressed && rightMousePressed && middleMousePressed && xButton1Pressed && xButton2Pressed;
         }
+        #endregion
 
-        private static void HandleKeyDown(Keys key)
+        #region Keybind index
+        private static void RebuildKeybindIndex()
         {
-            // Ignore repeated WM_KEYDOWN messages for the same key (auto-repeat) by
-            // only handling the event when the key transitions from up to down.
-            // HashSet.Add returns true if the key was not present and was added.
-            bool isNewPress = KeysPressed.Add(key);
-            if (!isNewPress)
+            try
             {
-                // Key is already marked as pressed; this is an auto-repeat - ignore.
-                return;
-            }
+                var byKey = new Dictionary<Keys, List<KeyValuePair<TRIGGERS, KeyCombination>>>();
+                var byMouse = new Dictionary<MouseMessages, List<KeyValuePair<TRIGGERS, KeyCombination>>>();
 
-             // Debug: log current key state when F8 is pressed
-             if (key == Keys.F8)
-             {
-                 Trace.WriteLine($"F8 pressed. Current KeysPressed: {string.Join(", ", KeysPressed)}");
-             }
-
-             // Check all keybind combinations (including those with mouse buttons)
-             foreach (var keybind in ConfigurationService.Current.Keybinds)
-             {
-                 if (IsKeyCombinationPressed(keybind.Value))
-                 {
-                     Trace.WriteLine($"Key combination triggered: {keybind.Key} -> {keybind.Value}");
-                     if (KeyActions.TryGetValue(keybind.Key, out var actionData))
-                     {
-                         ExecuteWithCooldown(keybind.Key, actionData);
-                     }
-                 }
-             }
-         }
-
-        private static void HandleKeyUp(Keys key)
-        {
-            KeysPressed.Remove(key);
-        }
-
-        private static void HandleMouseMessage(MouseMessages message, IntPtr lParam)
-        {
-            // Track mouse button states for combination checking
-            switch (message)
-            {
-                case MouseMessages.WM_LBUTTONDOWN:
-                    MouseButtonsPressed.Add(MouseMessages.WM_LBUTTONDOWN);
-                    break;
-                case MouseMessages.WM_LBUTTONUP:
-                    MouseButtonsPressed.Remove(MouseMessages.WM_LBUTTONDOWN);
-                    break;
-                case MouseMessages.WM_RBUTTONDOWN:
-                    MouseButtonsPressed.Add(MouseMessages.WM_RBUTTONDOWN);
-                    break;
-                case MouseMessages.WM_RBUTTONUP:
-                    MouseButtonsPressed.Remove(MouseMessages.WM_RBUTTONDOWN);
-                    break;
-                case MouseMessages.WM_MBUTTONDOWN:
-                    MouseButtonsPressed.Add(MouseMessages.WM_MBUTTONDOWN);
-                    break;
-                case MouseMessages.WM_MBUTTONUP:
-                    MouseButtonsPressed.Remove(MouseMessages.WM_MBUTTONDOWN);
-                    break;
-                case MouseMessages.WM_XBUTTONDOWN:
-                    HandleXButtonState(lParam, true);
-                    break;
-                case MouseMessages.WM_XBUTTONUP:
-                    HandleXButtonState(lParam, false);
-                    break;
-            }
-
-            // Only trigger actions for mouse-button-including keybinds on the actual button-down events
-            bool isMouseButtonDownEvent = message == MouseMessages.WM_LBUTTONDOWN
-                || message == MouseMessages.WM_RBUTTONDOWN
-                || message == MouseMessages.WM_MBUTTONDOWN
-                || message == MouseMessages.WM_XBUTTONDOWN;
-
-            // Check for keybind combinations that include mouse buttons
-            foreach (var keybind in ConfigurationService.Current.Keybinds)
-            {
-                // If the keybind requires mouse buttons, only evaluate on DOWN events to avoid repeats
-                if (keybind.Value.HasMouseButtons)
+                var keybinds = ConfigurationService.Current?.Keybinds;
+                if (keybinds != null)
                 {
-                    if (!isMouseButtonDownEvent)
-                        continue;
-
-                    if (IsKeyCombinationPressed(keybind.Value))
+                    foreach (var kvp in keybinds)
                     {
-                        if (KeyActions.TryGetValue(keybind.Key, out var actionData))
+                        var combo = kvp.Value;
+                        if (combo == null || combo.IsEmpty) continue;
+
+                        // Key-only combos (and combos using a key as their primary
+                        // trigger) are indexed by their non-modifier key.
+                        if (combo.Key != Keys.None && !combo.HasMouseButtons)
                         {
-                            Trace.WriteLine($"click combination triggered: {keybind.Key} -> {keybind.Value}");
-                            ExecuteWithCooldown(keybind.Key, actionData);
+                            if (!byKey.TryGetValue(combo.Key, out var list))
+                                byKey[combo.Key] = list = new List<KeyValuePair<TRIGGERS, KeyCombination>>();
+                            list.Add(kvp);
+                        }
+
+                        // Mouse-button combos fire on the matching DOWN event.
+                        if (combo.HasMouseButtons)
+                        {
+                            void AddMouse(MouseMessages m)
+                            {
+                                if (!byMouse.TryGetValue(m, out var list))
+                                    byMouse[m] = list = new List<KeyValuePair<TRIGGERS, KeyCombination>>();
+                                list.Add(kvp);
+                            }
+                            if (combo.LeftMouseButton) AddMouse(MouseMessages.WM_LBUTTONDOWN);
+                            if (combo.RightMouseButton) AddMouse(MouseMessages.WM_RBUTTONDOWN);
+                            if (combo.MiddleMouseButton) AddMouse(MouseMessages.WM_MBUTTONDOWN);
+                            if (combo.XButton1 || combo.XButton2) AddMouse(MouseMessages.WM_XBUTTONDOWN);
                         }
                     }
                 }
-            }
 
-            // Handle special mouse events
-            switch (message)
+                lock (KeybindIndexLock)
+                {
+                    _keybindsByKey = byKey;
+                    _keybindsByMouse = byMouse;
+                }
+
+                Trace.WriteLine($"Keybind index rebuilt: {byKey.Count} key buckets, {byMouse.Count} mouse buckets.");
+            }
+            catch (Exception ex)
             {
-                case MouseMessages.WM_RBUTTONDOWN:
-                    if (ConfigurationService.IsModifyingKeyBinds)
-                    {
-                        PositionConfigurationForm.choosePosition();
-                    }
-                    break;
+                Trace.WriteLine($"Error rebuilding keybind index: {ex.Message}");
             }
         }
+        #endregion
 
-        private static void HandleXButtonState(IntPtr lParam, bool isPressed)
-        {
-            var hookStruct = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
-            var xButton = (int)(hookStruct.mouseData >> 16);
-
-            if (xButton == 1)
-            {
-                _xButton1Pressed = isPressed;
-            }
-            else if (xButton == 2)
-            {
-                _xButton2Pressed = isPressed;
-            }
-        }
-
+        #region Actions
         private static void HandlePasteOnAllWindows()
         {
             Thread.Sleep(500);
@@ -428,153 +646,9 @@ namespace MultiClicker.Services
             {
                 PanelManagementService.SelectNextPanel();
                 WindowManagementService.SimulateKeyPressListToWindow(
-                    entry.Key, 
-                    new List<Keys> { Keys.LControlKey, Keys.V }, 
+                    entry.Key,
+                    new List<Keys> { Keys.LControlKey, Keys.V },
                     delay);
-            }
-        }
-
-        /// <summary>
-        /// Handles the toggle autopilot action by sending the command to all windows except the currently selected one
-        /// </summary>
-        private static void HandleToggleAutoPilot()
-        {
-            try
-            {
-                var autoPilotKey = ConfigurationService.Current.Keybinds.ContainsKey(TRIGGERS.DOFUS_AUTOPILOT_SHORTCUT) 
-                    ? ConfigurationService.Current.Keybinds[TRIGGERS.DOFUS_AUTOPILOT_SHORTCUT] 
-                    : null;
-                    
-                if (autoPilotKey == null || autoPilotKey.IsEmpty)
-                {
-                    Trace.WriteLine("DOFUS_AUTOPILOT_SHORTCUT key combination is not configured");
-                    return;
-                }
-
-                Trace.WriteLine($"Sending autopilot command to all windows except current: {autoPilotKey}");
-                var currentWindow = GetForegroundWindow();
-
-
-                foreach (var entry in WindowManagementService.WindowHandles)
-                {
-
-                    if (entry.Key == currentWindow)
-                    {
-                        Trace.WriteLine($"Skipping current window: {entry.Value.CharacterName}");
-                        continue;
-                    }
-
-                    Trace.WriteLine($"Sending autopilot to window: {entry.Value.CharacterName}");
-
-                    PanelManagementService.SelectNextPanel();
-                    SendAutoPilotKeyCombination(entry.Key, autoPilotKey);
-                    SendAutoPilotKeyCombination(entry.Key, autoPilotKey);
-                }
-
-                PanelManagementService.SelectNextPanel();
-
-                Trace.WriteLine("AutoPilot command sent to all other windows successfully");
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error in HandleToggleAutoPilot: {ex.Message}");
-            }
-        }
-
-
-        /// <summary>
-        /// Sends autopilot key combination using hardware scan codes with aggressive focus management
-        /// </summary>
-        private static void SendAutoPilotKeyCombination(IntPtr targetWindow, KeyCombination keyCombination)
-        {
-            try
-            {
-                Trace.WriteLine($"AutoPilot key combination to window {targetWindow}: {keyCombination}");
-                
-                SendScanCodes(keyCombination);
-                
-                Trace.WriteLine($"AutoPilot scan codes sent to window {targetWindow}");
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"AutoPilot key combination error: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Sends scan codes with detailed verification and timing
-        /// </summary>
-        private static void SendScanCodes(KeyCombination keyCombination)
-        {
-            try
-            {
-                var modifierScanCodes = new List<(byte scanCode, string name)>();
-                var mainKeyScanCode = (byte)0;
-                
-                // Get scan codes for modifiers
-                if (keyCombination.Control)
-                {
-                    byte ctrlScanCode = (byte)MapVirtualKey((uint)Keys.ControlKey, 0);
-                    modifierScanCodes.Add((ctrlScanCode, "Ctrl"));
-                    Trace.WriteLine($"AutoPilot: Ctrl scan code = {ctrlScanCode}");
-                }
-                if (keyCombination.Shift)
-                {
-                    byte shiftScanCode = (byte)MapVirtualKey((uint)Keys.ShiftKey, 0);
-                    modifierScanCodes.Add((shiftScanCode, "Shift"));
-                    Trace.WriteLine($"AutoPilot: Shift scan code = {shiftScanCode}");
-                }
-                if (keyCombination.Alt)
-                {
-                    byte altScanCode = (byte)MapVirtualKey((uint)Keys.Menu, 0);
-                    modifierScanCodes.Add((altScanCode, "Alt"));
-                    Trace.WriteLine($"AutoPilot: Alt scan code = {altScanCode}");
-                }
-                
-                // Get scan code for main key
-                if (keyCombination.Key != Keys.None)
-                {
-                    mainKeyScanCode = (byte)MapVirtualKey((uint)keyCombination.Key, 0);
-                    Trace.WriteLine($"AutoPilot: {keyCombination.Key} scan code = {mainKeyScanCode}");
-                }
-                
-                // Send modifier keys DOWN with verification
-                foreach (var (scanCode, name) in modifierScanCodes)
-                {
-                    keybd_event(0, scanCode, KEYEVENTF_SCANCODE, 0);
-                    Trace.WriteLine($"AutoPilot: {name} (scan {scanCode}) DOWN");
-                    Thread.Sleep(5); // Small delay between modifiers
-                }
-                
-                // Send main key DOWN and UP with proper timing
-                if (mainKeyScanCode != 0)
-                {
-                    keybd_event(0, mainKeyScanCode, KEYEVENTF_SCANCODE, 0);
-                    Trace.WriteLine($"AutoPilot: {keyCombination.Key} (scan {mainKeyScanCode}) DOWN");
-                    
-                    // Hold the key for a realistic duration
-                    Thread.Sleep(20);
-                    
-                    keybd_event(0, mainKeyScanCode, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0);
-                    Trace.WriteLine($"AutoPilot: {keyCombination.Key} (scan {mainKeyScanCode}) UP");
-                }
-                
-                // Release modifier keys UP in reverse order
-                for (int i = modifierScanCodes.Count - 1; i >= 0; i--)
-                {
-                    var (scanCode, name) = modifierScanCodes[i];
-                    Thread.Sleep(5); // Small delay between releases
-                    keybd_event(0, scanCode, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0);
-                    Trace.WriteLine($"AutoPilot: {name} (scan {scanCode}) UP");
-                }
-                
-                // Final verification delay
-                Thread.Sleep(50);
-                Trace.WriteLine("AutoPilot: Scan code sequence completed");
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"SendScanCodesWithVerification error: {ex.Message}");
             }
         }
         #endregion
