@@ -101,6 +101,20 @@ namespace MultiClicker.Services
             public uint time;
             public IntPtr dwExtraInfo;
         }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct KBDLLHOOKSTRUCT
+        {
+            public uint vkCode;
+            public uint scanCode;
+            public uint flags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+
+        // LLKHF_INJECTED / LLMHF_INJECTED — set by the OS when the event was
+        // synthesized via SendInput/keybd_event/mouse_event (i.e. by *us*).
+        private const uint LLHF_INJECTED = 0x00000010;
         #endregion
 
         #region Private Fields
@@ -201,7 +215,17 @@ namespace MultiClicker.Services
                 if (!isDown && !isUp)
                     return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
 
-                var key = (Keys)Marshal.ReadInt32(lParam);
+                var hookStruct = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+
+                // Ignore events we synthesized ourselves (SendInput/keybd_event from
+                // PerformForegroundClick, SetHandleToForeground, SimulateKeyPressListToWindow,
+                // etc.). Without this, our own clicks would re-enter the hook, leave
+                // modifier/mouse state "pressed", and any subsequent real key/click would
+                // re-satisfy the combination and re-fire the trigger.
+                if ((hookStruct.flags & LLHF_INJECTED) != 0)
+                    return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+
+                var key = (Keys)hookStruct.vkCode;
 
                 // Always reconcile modifiers and update key state, even when the
                 // foreground window is not a tracked one. This guarantees that
@@ -261,6 +285,15 @@ namespace MultiClicker.Services
                 {
                     return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
                 }
+
+                // Ignore events we synthesized ourselves (SendInput in
+                // PerformForegroundClick). Otherwise our own click re-enters this
+                // hook, marks the left mouse button as "down", and the next real
+                // input event re-satisfies a mouse-bound combination, re-firing
+                // the trigger.
+                var mouseHookStruct = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+                if ((mouseHookStruct.flags & LLHF_INJECTED) != 0)
+                    return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
 
                 // Always update mouse button state, regardless of foreground.
                 // This prevents losing UP events when the user drags off a
