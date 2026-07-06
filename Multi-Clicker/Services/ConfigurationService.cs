@@ -242,8 +242,8 @@ namespace MultiClicker.Services
             {
                 { TRIGGERS.SELECT_NEXT, new KeyCombination(Keys.F1) },
                 { TRIGGERS.SELECT_PREVIOUS, new KeyCombination(Keys.F2) },
-                { TRIGGERS.SIMPLE_CLICK, new KeyCombination(Keys.XButton1) },
-                { TRIGGERS.DOUBLE_CLICK, new KeyCombination(Keys.XButton2) },
+                { TRIGGERS.SIMPLE_CLICK, new KeyCombination(Keys.None, xButton1: true) },
+                { TRIGGERS.DOUBLE_CLICK, new KeyCombination(Keys.None, xButton2: true) },
                 { TRIGGERS.DOFUS_OPEN_DISCUSSION, new KeyCombination(Keys.Tab) },
                 { TRIGGERS.GROUP_CHARACTERS, new KeyCombination(Keys.F5) },
                 { TRIGGERS.OPTIONS, new KeyCombination(Keys.F12) },
@@ -327,6 +327,13 @@ namespace MultiClicker.Services
                     _config.Keybinds.Add(defaultKeybind.Key, defaultKeybind.Value);
                     changed = true;
                 }
+            }
+
+            // Canonicalize legacy combos that stored mouse buttons as a Keys value.
+            foreach (var combo in _config.Keybinds.Values)
+            {
+                if (combo != null && combo.Normalize())
+                    changed = true;
             }
 
             return changed;

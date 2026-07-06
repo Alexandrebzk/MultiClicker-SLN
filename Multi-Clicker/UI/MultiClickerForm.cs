@@ -172,7 +172,9 @@ namespace MultiClicker.UI
         private ContextMenuStrip _titleBarMenu;
         private bool _isDragging;
         private Point _dragStartPoint;
+        private bool _initialPlacementDone;
         private readonly Dictionary<string, Image> _imageCache;
+        private readonly System.Windows.Forms.Timer _windowWatcher;
 
         public MultiClickerForm()
         {
@@ -185,6 +187,9 @@ namespace MultiClicker.UI
             _openFileDialog = CreateOpenFileDialog();
             _contextMenu = CreateContextMenu();
 
+            _windowWatcher = new System.Windows.Forms.Timer { Interval = 2000 };
+            _windowWatcher.Tick += WindowWatcher_Tick;
+
             InitializeForm();
             SetupEventHandlers();
         }
@@ -192,14 +197,39 @@ namespace MultiClicker.UI
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
-            InitializeHooks();
             GenerateUI();
+            _windowWatcher.Start();
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            _windowWatcher.Stop();
             base.OnFormClosed(e);
             Application.Exit();
+        }
+
+        /// <summary>
+        /// Periodically re-scans running Dofus clients so newly opened windows
+        /// appear and closed ones disappear without restarting the app. Skipped
+        /// while a broadcast is running so panels are never rebuilt mid-action.
+        /// </summary>
+        private void WindowWatcher_Tick(object sender, EventArgs e)
+        {
+            try
+            {
+                if (WindowManagementService.IsBroadcasting) return;
+                if (ConfigurationService.IsModifyingKeyBinds) return;
+                if (HookManagementService.TriggersSuspended) return;
+
+                if (WindowManagementService.SynchronizeWindowList())
+                {
+                    GenerateUI();
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Window watcher error: {ex.Message}");
+            }
         }
 
         private const int CS_DROPSHADOW = 0x00020000;
@@ -305,10 +335,17 @@ namespace MultiClicker.UI
                 ConfigurationService.SaveConfig();
             };
 
+            var refreshItem = new ToolStripMenuItem(LocalizationService.GetString("RefreshWindows")) { Image = CreateMenuIcon("⟳", Color.DarkCyan) };
+            refreshItem.Click += (s, e) =>
+            {
+                WindowManagementService.SynchronizeWindowList();
+                GenerateUI();
+            };
+
             var languageItem = new ToolStripMenuItem(Strings.Language) { Image = CreateMenuIcon("🌐", Color.DarkGoldenrod) };
             languageItem.Click += (s, e) => ShowLanguageSelection();
 
-            menu.Items.AddRange(new ToolStripItem[] { modeItem, new ToolStripSeparator(), keybindsItem, selectCharactersItem, backgroundClicksItem, new ToolStripSeparator(), languageItem });
+            menu.Items.AddRange(new ToolStripItem[] { modeItem, new ToolStripSeparator(), keybindsItem, selectCharactersItem, backgroundClicksItem, refreshItem, new ToolStripSeparator(), languageItem });
             return menu;
         }
 
@@ -459,24 +496,37 @@ namespace MultiClicker.UI
             HookManagementService.ShouldOpenPositionConfiguration += HandleKeyBindFormRequest;
         }
 
-        private void InitializeHooks() { }
-        private void CleanupHooks() { }
-
         public void GenerateUI()
         {
             try
             {
+                var previouslySelected = PanelManagementService.SelectedPanel?.Name;
                 LoadImageCache();
                 EnsurePanelConfigsExist();
                 CreatePanels();
                 UpdateFormSize();
-                SelectFirstPanel();
+                RestoreSelection(previouslySelected);
                 ConfigurationService.SaveConfig();
             }
             catch (Exception ex)
             {
                 Trace.WriteLine($"Error generating UI: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Re-selects the panel that was selected before a rebuild (falling back
+        /// to the first panel) without stealing focus from the game.
+        /// </summary>
+        private void RestoreSelection(string previousName)
+        {
+            if (_flowLayoutPanel.Controls.Count == 0) return;
+
+            Control target = null;
+            if (!string.IsNullOrEmpty(previousName))
+                target = _flowLayoutPanel.Controls.Cast<Control>().FirstOrDefault(c => c.Name == previousName);
+
+            PanelManagementService.SelectPanelVisualOnly(target ?? _flowLayoutPanel.Controls[0]);
         }
 
         private void LoadImageCache()
@@ -507,7 +557,11 @@ namespace MultiClicker.UI
         private void CreatePanels()
         {
             _flowLayoutPanel.SuspendLayout();
+            // Controls.Clear() does not dispose: old panels hold Win32 handles and
+            // animation timers that would leak across auto-refresh rebuilds.
+            var oldPanels = _flowLayoutPanel.Controls.Cast<Control>().ToList();
             _flowLayoutPanel.Controls.Clear();
+            foreach (var old in oldPanels) old.Dispose();
             var orderedCharacterNames = new List<string>();
 
             List<string> charactersToDisplay = GetCharactersToDisplay();
@@ -545,10 +599,13 @@ namespace MultiClicker.UI
 
         private List<string> GetCharactersToDisplay()
         {
+            // Keep the WindowHandles order (discovery order initially, then the
+            // user's manual arrangement) instead of re-sorting alphabetically on
+            // every rebuild, which used to reset panel order after each refresh.
             var mode = ConfigurationService.Current.General.DisplayMode;
-            if (mode == PanelDisplayMode.AUTOMATIC) return WindowManagementService.WindowHandles.Values.Select(w => w.CharacterName).Distinct().OrderBy(c => c).ToList();
+            if (mode == PanelDisplayMode.AUTOMATIC) return WindowManagementService.WindowHandles.Values.Select(w => w.CharacterName).Distinct().ToList();
             var selectedCharacters = ConfigurationService.Current.General.SelectedCharacters ?? new List<string>();
-            if (selectedCharacters.Count == 0) return WindowManagementService.WindowHandles.Values.Select(w => w.CharacterName).Distinct().OrderBy(c => c).ToList();
+            if (selectedCharacters.Count == 0) return WindowManagementService.WindowHandles.Values.Select(w => w.CharacterName).Distinct().ToList();
             return selectedCharacters;
         }
 
@@ -577,7 +634,7 @@ namespace MultiClicker.UI
                     {
                         var handle = matchingProcess.MainWindowHandle;
                         var title = string.IsNullOrWhiteSpace(matchingProcess.MainWindowTitle) ? matchingProcess.ProcessName : matchingProcess.MainWindowTitle;
-                        if (!WindowManagementService.WindowHandles.ContainsKey(handle)) WindowManagementService.WindowHandles[handle] = new WindowInfo { WindowName = title, CharacterName = panelName };
+                        WindowManagementService.RegisterWindow(handle, new WindowInfo { Handle = handle, WindowName = title, CharacterName = panelName });
                         windowEntry = WindowManagementService.WindowHandles.FirstOrDefault(e => e.Key == handle);
                     }
                 }
@@ -623,10 +680,15 @@ namespace MultiClicker.UI
             var width = panelSize.Width;
             var height = panelSize.Height + _titleBar.Height;
             ClientSize = new Size(width, height);
-            Location = new Point(Screen.PrimaryScreen.WorkingArea.Width - ClientSize.Width - (Screen.PrimaryScreen.WorkingArea.Width / 20), _titleBar.Height + (Screen.PrimaryScreen.WorkingArea.Height / 10));
-        }
 
-        private void SelectFirstPanel() { if (_flowLayoutPanel.Controls.Count > 0) PanelManagementService.HandlePanelClick(_flowLayoutPanel.Controls[0], EventArgs.Empty); }
+            // Only place the bar automatically once; auto-refresh rebuilds must
+            // not teleport the window away from where the user dragged it.
+            if (!_initialPlacementDone)
+            {
+                Location = new Point(Screen.PrimaryScreen.WorkingArea.Width - ClientSize.Width - (Screen.PrimaryScreen.WorkingArea.Width / 20), _titleBar.Height + (Screen.PrimaryScreen.WorkingArea.Height / 10));
+                _initialPlacementDone = true;
+            }
+        }
 
         private void TitleBar_MouseDown(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) { _isDragging = true; _dragStartPoint = e.Location; } }
         private void TitleBar_MouseUp(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) _isDragging = false; }
@@ -639,7 +701,10 @@ namespace MultiClicker.UI
             UpdateLayout();
         }
 
-        private void HandleKeyBindFormRequest() { Invoke((MethodInvoker)delegate { using (var inputForm = new PositionConfigurationForm()) inputForm.ShowDialog(); }); }
+        // BeginInvoke: this is raised from the trigger dispatcher thread; a
+        // blocking Invoke + ShowDialog would stall every other trigger until
+        // the dialog closes.
+        private void HandleKeyBindFormRequest() { BeginInvoke((MethodInvoker)delegate { using (var inputForm = new PositionConfigurationForm()) inputForm.ShowDialog(this); }); }
 
         private void ChangeImagePanel_Click(object sender, EventArgs e)
         {

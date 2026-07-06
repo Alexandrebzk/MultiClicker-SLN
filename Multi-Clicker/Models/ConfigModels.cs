@@ -33,7 +33,12 @@ namespace MultiClicker.Models
         public int MaximumFollowDelay { get; set; }
         public PanelDisplayMode DisplayMode { get; set; } = PanelDisplayMode.AUTOMATIC;
         public List<string> SelectedCharacters { get; set; } = new List<string>();
-        public bool PreferBackgroundClicks { get; set; } = true;
+
+        // Default OFF: Dofus 3.x (Unity) reads input via raw input and ignores
+        // synthesized window messages, so background clicks never reach the game.
+        // The toggle remains for experimentation, but the reliable path is the
+        // foreground SendInput broadcast.
+        public bool PreferBackgroundClicks { get; set; } = false;
     }
 
     /// <summary>
@@ -113,7 +118,29 @@ namespace MultiClicker.Models
             combination.Shift = (keys & Keys.Shift) == Keys.Shift;
             combination.Alt = (keys & Keys.Alt) == Keys.Alt;
             combination.Key = keys & ~Keys.Control & ~Keys.Shift & ~Keys.Alt;
+            combination.Normalize();
             return combination;
+        }
+
+        /// <summary>
+        /// Mouse buttons stored as a keyboard <see cref="Keys"/> value (legacy configs,
+        /// old defaults) can never be satisfied by the keyboard hook. Fold them into
+        /// the dedicated mouse-button flags so every combination is expressed in a
+        /// single canonical form. Returns true if anything changed.
+        /// </summary>
+        public bool Normalize()
+        {
+            switch (Key)
+            {
+                case Keys.LButton: LeftMouseButton = true; break;
+                case Keys.RButton: RightMouseButton = true; break;
+                case Keys.MButton: MiddleMouseButton = true; break;
+                case Keys.XButton1: XButton1 = true; break;
+                case Keys.XButton2: XButton2 = true; break;
+                default: return false;
+            }
+            Key = Keys.None;
+            return true;
         }
 
         public Keys ToKeys()
@@ -303,6 +330,7 @@ namespace MultiClicker.Models
                 if (obj["XButton2"] != null)
                     keyCombination.XButton2 = obj["XButton2"].Value<bool>();
 
+                keyCombination.Normalize();
                 return keyCombination;
             }
 

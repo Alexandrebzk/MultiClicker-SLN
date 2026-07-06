@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using MultiClicker.Models;
 using MultiClicker.Services;
@@ -15,43 +14,6 @@ namespace MultiClicker.UI
     /// </summary>
     public partial class KeybindsConfigForm : Form
     {
-        #region P/Invoke Declarations
-        [DllImport("user32.dll")]
-        static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        static extern bool UnhookWindowsHookEx(IntPtr hhk);
-
-        [DllImport("user32.dll")]
-        static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
-
-        [DllImport("kernel32.dll")]
-        static extern IntPtr GetModuleHandle(string lpModuleName);
-
-        private const int WH_MOUSE_LL = 14;
-        private const int WM_XBUTTONDOWN = 0x020B;
-
-        private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct POINT
-        {
-            public int x;
-            public int y;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct MSLLHOOKSTRUCT
-        {
-            public POINT pt;
-            public uint mouseData;
-            public uint flags;
-            public uint time;
-            public IntPtr dwExtraInfo;
-        }
-        #endregion
-
         private Dictionary<TRIGGERS, KeyCombination> _pendingKeybinds;
         private Dictionary<TRIGGERS, string> _triggerDescriptions;
         private TableLayoutPanel _mainTableLayout;
@@ -61,8 +23,6 @@ namespace MultiClicker.UI
         private bool _isCapturingInput = false;
         private TextBox _activeTextBox = null;
         private KeyCombination _currentCombination = new KeyCombination();
-        private IntPtr _mouseHook = IntPtr.Zero;
-        private LowLevelMouseProc _mouseProc;
 
         public KeybindsConfigForm()
         {
@@ -70,48 +30,38 @@ namespace MultiClicker.UI
             InitializeTriggerDescriptions();
             LoadCurrentKeybinds();
             CreateInterface();
-            SetupMouseHook();
+
+            // While this dialog is open, no trigger may fire: pressing a
+            // currently-bound combination to redefine it must not launch a
+            // broadcast. X button presses are reported by the global hook
+            // service instead of installing a second low-level hook here.
+            HookManagementService.TriggersSuspended = true;
+            HookManagementService.XButtonCaptured += OnGlobalXButtonCaptured;
         }
 
-        private void SetupMouseHook()
+        private void OnGlobalXButtonCaptured(int xButton)
         {
-            _mouseProc = MouseHookCallback;
-            using (var curProcess = System.Diagnostics.Process.GetCurrentProcess())
-            using (var curModule = curProcess.MainModule)
+            if (!_isCapturingInput || _activeTextBox == null || IsDisposed) return;
+            try
             {
-                _mouseHook = SetWindowsHookEx(WH_MOUSE_LL, _mouseProc, GetModuleHandle(curModule.ModuleName), 0);
+                BeginInvoke(new Action(() =>
+                {
+                    if (!_isCapturingInput || _activeTextBox == null) return;
+                    if (xButton == 1) _currentCombination.XButton1 = true;
+                    else if (xButton == 2) _currentCombination.XButton2 = true;
+                    UpdateCombinationDisplay(_activeTextBox);
+                }));
             }
-        }
-
-        private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
-        {
-            if (nCode >= 0 && wParam == (IntPtr)WM_XBUTTONDOWN && _isCapturingInput && _activeTextBox != null)
+            catch (InvalidOperationException)
             {
-                var hookStruct = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
-                var xButton = (int)(hookStruct.mouseData >> 16);
-
-                if (xButton == 1)
-                {
-                    _currentCombination.XButton1 = true;
-                    this.Invoke(new Action(() => UpdateCombinationDisplay(_activeTextBox)));
-                }
-                else if (xButton == 2)
-                {
-                    _currentCombination.XButton2 = true;
-                    this.Invoke(new Action(() => UpdateCombinationDisplay(_activeTextBox)));
-                }
+                // Form is closing; nothing to update.
             }
-
-            return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
-            if (_mouseHook != IntPtr.Zero)
-            {
-                UnhookWindowsHookEx(_mouseHook);
-                _mouseHook = IntPtr.Zero;
-            }
+            HookManagementService.XButtonCaptured -= OnGlobalXButtonCaptured;
+            HookManagementService.TriggersSuspended = false;
             base.OnFormClosed(e);
         }
 
@@ -550,6 +500,27 @@ namespace MultiClicker.UI
 
         private void SaveButton_Click(object sender, EventArgs e)
         {
+            // Warn when two actions share the exact same combination: both would
+            // fire on a single press, which is almost never what the user wants.
+            var duplicates = _pendingKeybinds
+                .Where(kvp => kvp.Value != null && !kvp.Value.IsEmpty)
+                .GroupBy(kvp => kvp.Value.ToString())
+                .Where(g => g.Count() > 1)
+                .ToList();
+
+            if (duplicates.Count > 0)
+            {
+                var details = string.Join(Environment.NewLine, duplicates.Select(g =>
+                    $"{g.Key}: {string.Join(", ", g.Select(kvp => _triggerDescriptions.TryGetValue(kvp.Key, out var d) ? d : kvp.Key.ToString()))}"));
+                var proceed = MessageBox.Show(
+                    LocalizationService.GetString("DuplicateKeybindsWarning") + Environment.NewLine + Environment.NewLine + details,
+                    Strings.ConfirmationTitle,
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+                if (proceed != DialogResult.Yes)
+                    return;
+            }
+
             // Save all keybinds
             foreach (var kvp in _pendingKeybinds)
             {

@@ -38,16 +38,26 @@ namespace MultiClicker
             {
                 // Initialize tracing
                 Trace.Listeners.Add(new FileTraceListener("trace.log"));
-                
-                // Configure Windows Forms
+
+                // Configure Windows Forms. Per-monitor DPI awareness is required
+                // for correct click coordinates on scaled displays: without it,
+                // the OS virtualizes our screen coordinates while the game (DPI
+                // aware) interprets the client coordinates we post in physical
+                // pixels, so background clicks land in the wrong place.
+                Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                
+
                 // Initialize localization system
                 LocalizationService.Initialize();
-                
+
                 // Set up global exception handling
                 AppDomain.CurrentDomain.UnhandledException += ApplicationManager.Instance.HandleUnhandledException;
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+                Application.ThreadException += (s, e) =>
+                {
+                    Trace.WriteLine($"Unhandled UI exception: {e.Exception}");
+                };
                 Application.ApplicationExit += (s, e) => Cleanup();
                 
                 // Initialize the application manager
