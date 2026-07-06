@@ -5,7 +5,6 @@ using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 using MultiClicker.Models;
 
@@ -14,17 +13,20 @@ namespace MultiClicker.Services
     /// <summary>
     /// Service responsible for managing global hooks and input handling.
     ///
-    /// Design notes (post-audit):
-    ///  * Input state (KeysPressed / mouse button flags) is always updated for
-    ///    key/mouse-up events, regardless of foreground window, so that focus
-    ///    changes can never leave a key "stuck" pressed.
+    /// Design invariants:
+    ///  * Input state (KeysPressed / mouse button flags) is fed exclusively by
+    ///    REAL hardware events. Events we inject ourselves (SendInput,
+    ///    keybd_event) carry the LLxHF_INJECTED flag and are filtered out, so
+    ///    a broadcast can never poison the tracked state and re-fire triggers.
     ///  * Trigger evaluation is edge-triggered: a key-down only fires keybinds
     ///    whose primary key matches the key that just went down; mouse-down
-    ///    only fires keybinds whose required mouse button matches the event.
-    ///  * A periodic reconciliation pass uses GetAsyncKeyState to prune any
-    ///    state that drifted out of sync with the OS (lost up-events, etc.).
-    ///  * Per-event work inside the hook callback is kept minimal; all heavy
-    ///    actions are dispatched via Task.Run to avoid LowLevelHooksTimeout.
+    ///    only fires keybinds bound to the button that just went down.
+    ///  * A periodic reconciliation pass uses GetAsyncKeyState to PRUNE state
+    ///    that drifted out of sync with the OS (lost up-events). It never adds
+    ///    state, so our own injected keys cannot create phantom modifiers.
+    ///  * Hook callbacks do the minimum possible work. Every trigger action is
+    ///    executed on a single dedicated dispatcher thread, which serializes
+    ///    broadcasts so two triggers can never interleave their injected input.
     /// </summary>
     public static class HookManagementService
     {
@@ -37,12 +39,6 @@ namespace MultiClicker.Services
 
         [DllImport("user32.dll")]
         public static extern bool GetCursorPos(out POINT lpPoint);
-
-        [DllImport("user32.dll")]
-        public static extern IntPtr WindowFromPoint(POINT Point);
-
-        [DllImport("user32.dll")]
-        static extern short GetKeyState(int nVirtKey);
 
         [DllImport("user32.dll")]
         private static extern short GetAsyncKeyState(int vKey);
@@ -70,21 +66,14 @@ namespace MultiClicker.Services
         public const int WM_SYSKEYDOWN = 0x0104;
         public const int WM_SYSKEYUP = 0x0105;
 
-        // Virtual key codes used by reconciliation.
+        // Virtual key codes used by reconciliation and modifier handling.
         private const int VK_LBUTTON = 0x01;
         private const int VK_RBUTTON = 0x02;
         private const int VK_MBUTTON = 0x04;
         private const int VK_XBUTTON1 = 0x05;
         private const int VK_XBUTTON2 = 0x06;
-        private const int VK_SHIFT = 0x10;
         private const int VK_CONTROL = 0x11;
         private const int VK_MENU = 0x12; // Alt
-        private const int VK_LSHIFT = 0xA0;
-        private const int VK_RSHIFT = 0xA1;
-        private const int VK_LCONTROL = 0xA2;
-        private const int VK_RCONTROL = 0xA3;
-        private const int VK_LMENU = 0xA4;
-        private const int VK_RMENU = 0xA5;
 
         // Threshold (ms) above which a hook callback is considered too slow
         // (Windows LowLevelHooksTimeout defaults to ~300 ms; warn well before).
@@ -112,7 +101,7 @@ namespace MultiClicker.Services
             public IntPtr dwExtraInfo;
         }
 
-        // LLKHF_INJECTED / LLMHF_INJECTED — set by the OS when the event was
+        // LLKHF_INJECTED / LLMHF_INJECTED - set by the OS when the event was
         // synthesized via SendInput/keybd_event/mouse_event (i.e. by *us*).
         private const uint LLHF_INJECTED = 0x00000010;
         #endregion
@@ -137,6 +126,11 @@ namespace MultiClicker.Services
         private static readonly ConcurrentDictionary<TRIGGERS, DateTime> _runningTriggers =
             new ConcurrentDictionary<TRIGGERS, DateTime>();
 
+        // Single dispatcher thread: serializes every trigger action so that two
+        // broadcasts can never interleave their SetForegroundWindow/SendInput calls.
+        private static BlockingCollection<(TRIGGERS trigger, Action<object> action, object context)> _dispatchQueue;
+        private static Thread _dispatchThread;
+
         // Pre-computed keybind indices for O(1) edge-triggered lookup.
         // Rebuilt on init and whenever ConfigurationService.KeybindsChanged fires.
         private static readonly object KeybindIndexLock = new object();
@@ -147,14 +141,33 @@ namespace MultiClicker.Services
 
         private static System.Threading.Timer _reconcileTimer;
         private static volatile bool _initialized;
+        private static volatile bool _triggersSuspended;
         #endregion
 
         #region Public Events
         public static event Action ShouldOpenPositionConfiguration;
+
+        /// <summary>
+        /// Raised (on a worker thread) when an extended mouse button goes down,
+        /// so the keybinds dialog can capture X1/X2 without installing its own hook.
+        /// The int is 1 for XButton1, 2 for XButton2.
+        /// </summary>
+        public static event Action<int> XButtonCaptured;
         #endregion
 
         #region Public Properties
         public static POINT CursorPosition => _cursorPosition;
+
+        /// <summary>
+        /// While true, hook callbacks keep tracking input state but do not fire
+        /// any trigger. Set by the keybinds dialog during capture so that
+        /// pressing a currently-bound combination doesn't launch a broadcast.
+        /// </summary>
+        public static bool TriggersSuspended
+        {
+            get => _triggersSuspended;
+            set => _triggersSuspended = value;
+        }
         #endregion
 
         #region Public Methods
@@ -164,6 +177,15 @@ namespace MultiClicker.Services
             InitializeKeyActions();
             RebuildKeybindIndex();
             ConfigurationService.KeybindsChanged += RebuildKeybindIndex;
+
+            _dispatchQueue = new BlockingCollection<(TRIGGERS, Action<object>, object)>();
+            _dispatchThread = new Thread(DispatchLoop)
+            {
+                IsBackground = true,
+                Name = "TriggerDispatcher",
+                Priority = ThreadPriority.AboveNormal
+            };
+            _dispatchThread.Start();
 
             // Periodic reconciliation against OS state every 500 ms.
             _reconcileTimer = new System.Threading.Timer(_ => ReconcileInputState(),
@@ -178,6 +200,8 @@ namespace MultiClicker.Services
                 ConfigurationService.KeybindsChanged -= RebuildKeybindIndex;
                 _reconcileTimer?.Dispose();
                 _reconcileTimer = null;
+                _dispatchQueue?.CompleteAdding();
+                _dispatchThread?.Join(TimeSpan.FromSeconds(1));
                 ClearInputState();
                 _initialized = false;
             }
@@ -218,22 +242,19 @@ namespace MultiClicker.Services
                 var hookStruct = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
 
                 // Ignore events we synthesized ourselves (SendInput/keybd_event from
-                // PerformForegroundClick, SetHandleToForeground, SimulateKeyPressListToWindow,
-                // etc.). Without this, our own clicks would re-enter the hook, leave
-                // modifier/mouse state "pressed", and any subsequent real key/click would
-                // re-satisfy the combination and re-fire the trigger.
+                // broadcasts). Without this, our own injected keys would poison the
+                // tracked state and any subsequent real key/click would re-satisfy
+                // the combination and re-fire the trigger.
                 if ((hookStruct.flags & LLHF_INJECTED) != 0)
                     return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
 
-                var key = (Keys)hookStruct.vkCode;
+                var key = NormalizeKey((Keys)hookStruct.vkCode);
 
-                // Always reconcile modifiers and update key state, even when the
-                // foreground window is not a tracked one. This guarantees that
-                // key-up events are never lost across focus changes.
+                // Always update key state, even when the foreground window is not
+                // a tracked one, so key-up events are never lost across focus changes.
                 bool wasNewPress;
                 lock (InputLock)
                 {
-                    UpdateModifierKeysLocked();
                     if (isDown)
                         wasNewPress = KeysPressed.Add(key);
                     else
@@ -245,7 +266,7 @@ namespace MultiClicker.Services
 
                 // Only evaluate triggers when the foreground window is one we care
                 // about, and only on the *initial* down event (no auto-repeat).
-                if (isDown && wasNewPress)
+                if (isDown && wasNewPress && !_triggersSuspended && !ConfigurationService.IsModifyingKeyBinds)
                 {
                     var fg = GetForegroundWindow();
                     if (WindowManagementService.IsRelatedHandle(fg))
@@ -286,22 +307,21 @@ namespace MultiClicker.Services
                     return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
                 }
 
-                // Ignore events we synthesized ourselves (SendInput in
-                // PerformForegroundClick). Otherwise our own click re-enters this
-                // hook, marks the left mouse button as "down", and the next real
-                // input event re-satisfies a mouse-bound combination, re-firing
-                // the trigger.
+                // Ignore events we synthesized ourselves (SendInput broadcasts).
                 var mouseHookStruct = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
                 if ((mouseHookStruct.flags & LLHF_INJECTED) != 0)
                     return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+
+                int xButton = 0;
+                if (message == MouseMessages.WM_XBUTTONDOWN || message == MouseMessages.WM_XBUTTONUP)
+                    xButton = (int)(mouseHookStruct.mouseData >> 16);
 
                 // Always update mouse button state, regardless of foreground.
                 // This prevents losing UP events when the user drags off a
                 // tracked window before releasing.
                 lock (InputLock)
                 {
-                    UpdateMouseButtonStateLocked(message, lParam);
-                    UpdateModifierKeysLocked();
+                    UpdateMouseButtonStateLocked(message, xButton);
                 }
 
                 bool isMouseDown =
@@ -313,24 +333,34 @@ namespace MultiClicker.Services
                 if (!isMouseDown)
                     return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
 
-                // Update cursor position lazily (only when a click event arrives).
-                GetCursorPos(out _cursorPosition);
-                var hWnd = WindowFromPoint(_cursorPosition);
+                // The hook struct carries the exact event coordinates - cheaper and
+                // more precise than a GetCursorPos round-trip.
+                _cursorPosition = mouseHookStruct.pt;
 
-                var fg = GetForegroundWindow();
-                bool fgRelated = WindowManagementService.IsRelatedHandle(fg);
-                bool hoverRelated = WindowManagementService.WindowHandles.ContainsKey(hWnd);
-
-                // Special right-click handler for keybind position picker - this
-                // intentionally fires regardless of foreground.
-                if (message == MouseMessages.WM_RBUTTONDOWN && ConfigurationService.IsModifyingKeyBinds)
+                // Keybind capture dialog: report X button presses, never fire triggers.
+                if (message == MouseMessages.WM_XBUTTONDOWN && XButtonCaptured != null && _triggersSuspended)
                 {
-                    PositionConfigurationForm.choosePosition();
+                    var captured = xButton;
+                    ThreadPool.QueueUserWorkItem(_ => XButtonCaptured?.Invoke(captured));
                 }
 
-                if (fgRelated && hoverRelated)
+                // Position picker: a right-click defines a rectangle corner. Runs
+                // off-thread; the form marshals its own UI updates.
+                if (message == MouseMessages.WM_RBUTTONDOWN && ConfigurationService.IsModifyingKeyBinds)
                 {
-                    EvaluateMouseTriggers(message);
+                    var point = mouseHookStruct.pt;
+                    ThreadPool.QueueUserWorkItem(_ => SafeChoosePosition(point));
+                    return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+                }
+
+                if (_triggersSuspended || ConfigurationService.IsModifyingKeyBinds)
+                    return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+
+                var fg = GetForegroundWindow();
+                if (WindowManagementService.IsRelatedHandle(fg) &&
+                    WindowManagementService.IsPointOverTrackedWindow(mouseHookStruct.pt))
+                {
+                    EvaluateMouseTriggers(message, xButton, mouseHookStruct.pt);
                 }
             }
             catch (Exception ex)
@@ -360,6 +390,11 @@ namespace MultiClicker.Services
                 candidates = new List<KeyValuePair<TRIGGERS, KeyCombination>>(candidates);
             }
 
+            // Keyboard-triggered actions still need a click position (e.g. a click
+            // broadcast bound to a key); snapshot the cursor at trigger time.
+            POINT cursor;
+            if (!GetCursorPos(out cursor)) cursor = _cursorPosition;
+
             foreach (var kvp in candidates)
             {
                 // Keyboard-only triggers fire on key-down. Keybinds that *also*
@@ -371,13 +406,13 @@ namespace MultiClicker.Services
                     Trace.WriteLine($"Key combination triggered: {kvp.Key} -> {kvp.Value}");
                     if (KeyActions.TryGetValue(kvp.Key, out var actionData))
                     {
-                        ExecuteWithCooldown(kvp.Key, actionData);
+                        EnqueueTrigger(kvp.Key, actionData, cursor);
                     }
                 }
             }
         }
 
-        private static void EvaluateMouseTriggers(MouseMessages downMessage)
+        private static void EvaluateMouseTriggers(MouseMessages downMessage, int xButton, POINT cursor)
         {
             List<KeyValuePair<TRIGGERS, KeyCombination>> candidates;
             lock (KeybindIndexLock)
@@ -389,12 +424,21 @@ namespace MultiClicker.Services
 
             foreach (var kvp in candidates)
             {
+                // Edge-trigger on the button that actually went down: an X1-bound
+                // combo must not fire because X2 was pressed while X1 was stuck.
+                if (downMessage == MouseMessages.WM_XBUTTONDOWN)
+                {
+                    bool matchesEvent = (kvp.Value.XButton1 && xButton == 1) ||
+                                        (kvp.Value.XButton2 && xButton == 2);
+                    if (!matchesEvent) continue;
+                }
+
                 if (IsKeyCombinationPressed(kvp.Value))
                 {
                     Trace.WriteLine($"Click combination triggered: {kvp.Key} -> {kvp.Value}");
                     if (KeyActions.TryGetValue(kvp.Key, out var actionData))
                     {
-                        ExecuteWithCooldown(kvp.Key, actionData);
+                        EnqueueTrigger(kvp.Key, actionData, cursor);
                     }
                 }
             }
@@ -402,20 +446,21 @@ namespace MultiClicker.Services
         #endregion
 
         #region Cooldown & dispatch
-        private static bool ExecuteWithCooldown(TRIGGERS trigger, (Action<object> action, TimeSpan minimumCooldown) actionData)
+        private static bool EnqueueTrigger(TRIGGERS trigger,
+            (Action<object> action, TimeSpan minimumCooldown) actionData, object context)
         {
             var now = DateTime.UtcNow;
 
             // Reentrancy guard with a stale-flag watchdog. If a trigger was marked
-            // running more than 10x its cooldown ago, assume the task died or
-            // failed to schedule and force-clear so the user is not locked out.
+            // running more than 10x its cooldown ago, assume the task died and
+            // force-clear so the user is not locked out.
             if (_runningTriggers.TryGetValue(trigger, out var startedAt))
             {
                 var stuckThreshold = TimeSpan.FromTicks(Math.Max(actionData.minimumCooldown.Ticks * 10,
                     TimeSpan.FromSeconds(5).Ticks));
                 if (now - startedAt < stuckThreshold)
                 {
-                    Trace.WriteLine($"Trigger {trigger} is already running, skipping execution.");
+                    Trace.WriteLine($"Trigger {trigger} is already running/queued, skipping.");
                     return false;
                 }
 
@@ -429,36 +474,67 @@ namespace MultiClicker.Services
                     return false;
             }
 
+            var queue = _dispatchQueue;
+            if (queue == null || queue.IsAddingCompleted)
+                return false;
+
             _lastExecutionTime[trigger] = now;
             _runningTriggers[trigger] = now;
 
-            Task.Run(() =>
+            try
             {
-                try
-                {
-                    actionData.action(null);
-                }
-                catch (Exception ex)
-                {
-                    Trace.WriteLine($"Error executing trigger {trigger}: {ex.Message}");
-                }
-                finally
-                {
-                    _runningTriggers.TryRemove(trigger, out _);
-                }
-            });
+                queue.Add((trigger, actionData.action, context));
+            }
+            catch (InvalidOperationException)
+            {
+                _runningTriggers.TryRemove(trigger, out _);
+                return false;
+            }
 
             return true;
         }
+
+        private static void DispatchLoop()
+        {
+            foreach (var item in _dispatchQueue.GetConsumingEnumerable())
+            {
+                WindowManagementService.IsBroadcasting = true;
+                try
+                {
+                    item.action(item.context);
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Error executing trigger {item.trigger}: {ex.Message}");
+                }
+                finally
+                {
+                    WindowManagementService.IsBroadcasting = false;
+                    _runningTriggers.TryRemove(item.trigger, out _);
+                }
+            }
+        }
+
+        private static void SafeChoosePosition(POINT point)
+        {
+            try
+            {
+                PositionConfigurationForm.choosePosition(point);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error handling position pick: {ex.Message}");
+            }
+        }
         #endregion
 
-        #region State helpers (must be called under InputLock unless noted)
+        #region State helpers
         private static void InitializeKeyActions()
         {
             KeyActions[TRIGGERS.SELECT_NEXT] = (obj => PanelManagementService.SelectNextPanel(), TimeSpan.FromMilliseconds(100));
             KeyActions[TRIGGERS.SELECT_PREVIOUS] = (obj => PanelManagementService.SelectPreviousPanel(), TimeSpan.FromMilliseconds(100));
-            KeyActions[TRIGGERS.SIMPLE_CLICK] = (obj => WindowManagementService.PerformWindowClick(_cursorPosition, false), TimeSpan.FromMilliseconds(100));
-            KeyActions[TRIGGERS.DOUBLE_CLICK] = (obj => WindowManagementService.PerformWindowDoubleClick(_cursorPosition), TimeSpan.FromMilliseconds(100));
+            KeyActions[TRIGGERS.SIMPLE_CLICK] = (obj => WindowManagementService.BroadcastClick((POINT)obj, doubleClick: false), TimeSpan.FromMilliseconds(100));
+            KeyActions[TRIGGERS.DOUBLE_CLICK] = (obj => WindowManagementService.BroadcastClick((POINT)obj, doubleClick: true), TimeSpan.FromMilliseconds(100));
             KeyActions[TRIGGERS.GROUP_CHARACTERS] = (obj => WindowManagementService.GroupCharacters(), TimeSpan.FromMilliseconds(1000));
             KeyActions[TRIGGERS.OPTIONS] = (obj => ShouldOpenPositionConfiguration?.Invoke(), TimeSpan.FromMilliseconds(1000));
             KeyActions[TRIGGERS.PASTE_ON_ALL_WINDOWS] = (obj => HandlePasteOnAllWindows(), TimeSpan.FromMilliseconds(500));
@@ -471,30 +547,22 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
-        /// Synchronises tracked modifier state with the OS, treating L/R variants
-        /// independently so a missed up-event on one side cannot leave the other
-        /// side stuck.
+        /// Low-level hooks report side-specific virtual keys, but be defensive:
+        /// fold any generic modifier code into its left-hand variant so state
+        /// tracking and combination matching use one canonical value.
         /// </summary>
-        private static void UpdateModifierKeysLocked()
+        private static Keys NormalizeKey(Keys key)
         {
-            SetKeyState(Keys.LControlKey, (GetKeyState(VK_LCONTROL) & 0x8000) != 0);
-            SetKeyState(Keys.RControlKey, (GetKeyState(VK_RCONTROL) & 0x8000) != 0);
-            SetKeyState(Keys.LShiftKey, (GetKeyState(VK_LSHIFT) & 0x8000) != 0);
-            SetKeyState(Keys.RShiftKey, (GetKeyState(VK_RSHIFT) & 0x8000) != 0);
-            SetKeyState(Keys.LMenu, (GetKeyState(VK_LMENU) & 0x8000) != 0);
-            SetKeyState(Keys.RMenu, (GetKeyState(VK_RMENU) & 0x8000) != 0);
-
-            // Legacy "Keys.Alt" flag kept for any code that still inspects it.
-            SetKeyState(Keys.Alt, (GetKeyState(VK_MENU) & 0x8000) != 0);
+            switch (key)
+            {
+                case Keys.ShiftKey: return Keys.LShiftKey;
+                case Keys.ControlKey: return Keys.LControlKey;
+                case Keys.Menu: return Keys.LMenu;
+                default: return key;
+            }
         }
 
-        private static void SetKeyState(Keys key, bool pressed)
-        {
-            if (pressed) KeysPressed.Add(key);
-            else KeysPressed.Remove(key);
-        }
-
-        private static void UpdateMouseButtonStateLocked(MouseMessages message, IntPtr lParam)
+        private static void UpdateMouseButtonStateLocked(MouseMessages message, int xButton)
         {
             switch (message)
             {
@@ -504,23 +572,22 @@ namespace MultiClicker.Services
                 case MouseMessages.WM_RBUTTONUP: MouseButtonsPressed.Remove(MouseMessages.WM_RBUTTONDOWN); break;
                 case MouseMessages.WM_MBUTTONDOWN: MouseButtonsPressed.Add(MouseMessages.WM_MBUTTONDOWN); break;
                 case MouseMessages.WM_MBUTTONUP: MouseButtonsPressed.Remove(MouseMessages.WM_MBUTTONDOWN); break;
-                case MouseMessages.WM_XBUTTONDOWN: SetXButtonStateLocked(lParam, true); break;
-                case MouseMessages.WM_XBUTTONUP: SetXButtonStateLocked(lParam, false); break;
+                case MouseMessages.WM_XBUTTONDOWN:
+                    if (xButton == 1) _xButton1Pressed = true;
+                    else if (xButton == 2) _xButton2Pressed = true;
+                    break;
+                case MouseMessages.WM_XBUTTONUP:
+                    if (xButton == 1) _xButton1Pressed = false;
+                    else if (xButton == 2) _xButton2Pressed = false;
+                    break;
             }
-        }
-
-        private static void SetXButtonStateLocked(IntPtr lParam, bool isPressed)
-        {
-            var hookStruct = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
-            var xButton = (int)(hookStruct.mouseData >> 16);
-            if (xButton == 1) _xButton1Pressed = isPressed;
-            else if (xButton == 2) _xButton2Pressed = isPressed;
         }
 
         /// <summary>
         /// Reconciles tracked state with hardware state via GetAsyncKeyState.
-        /// Removes any key/mouse-button entries whose real state is "up" - this
-        /// is the safety net for lost up-events under load, UAC, or focus changes.
+        /// PRUNE-ONLY: removes any key/mouse-button entries whose real state is
+        /// "up" - the safety net for lost up-events under load, UAC, or focus
+        /// changes. It never adds state, so injected input can't create phantoms.
         /// </summary>
         private static void ReconcileInputState()
         {
@@ -528,19 +595,21 @@ namespace MultiClicker.Services
             {
                 lock (InputLock)
                 {
-                    UpdateModifierKeysLocked();
-
-                    // Prune any non-modifier keys that the OS says are no longer down.
-                    var stale = new List<Keys>();
+                    List<Keys> stale = null;
                     foreach (var k in KeysPressed)
                     {
-                        if (IsModifierKey(k)) continue;
                         if ((GetAsyncKeyState((int)k) & 0x8000) == 0)
-                            stale.Add(k);
+                            (stale ??= new List<Keys>()).Add(k);
                     }
-                    foreach (var k in stale) KeysPressed.Remove(k);
+                    if (stale != null)
+                    {
+                        foreach (var k in stale)
+                        {
+                            Trace.WriteLine($"[Reconcile] Pruning stuck key {k}");
+                            KeysPressed.Remove(k);
+                        }
+                    }
 
-                    // Mouse buttons.
                     PruneMouseButton(MouseMessages.WM_LBUTTONDOWN, VK_LBUTTON);
                     PruneMouseButton(MouseMessages.WM_RBUTTONDOWN, VK_RBUTTON);
                     PruneMouseButton(MouseMessages.WM_MBUTTONDOWN, VK_MBUTTON);
@@ -558,14 +627,6 @@ namespace MultiClicker.Services
         {
             if (MouseButtonsPressed.Contains(msg) && (GetAsyncKeyState(vk) & 0x8000) == 0)
                 MouseButtonsPressed.Remove(msg);
-        }
-
-        private static bool IsModifierKey(Keys k)
-        {
-            return k == Keys.LControlKey || k == Keys.RControlKey
-                || k == Keys.LShiftKey || k == Keys.RShiftKey
-                || k == Keys.LMenu || k == Keys.RMenu
-                || k == Keys.Alt || k == Keys.Control || k == Keys.Shift;
         }
 
         private static void ClearInputState()
@@ -591,7 +652,7 @@ namespace MultiClicker.Services
 
                 bool ctrlDown = KeysPressed.Contains(Keys.LControlKey) || KeysPressed.Contains(Keys.RControlKey);
                 bool shiftDown = KeysPressed.Contains(Keys.LShiftKey) || KeysPressed.Contains(Keys.RShiftKey);
-                bool altDown = KeysPressed.Contains(Keys.LMenu) || KeysPressed.Contains(Keys.RMenu) || KeysPressed.Contains(Keys.Alt);
+                bool altDown = KeysPressed.Contains(Keys.LMenu) || KeysPressed.Contains(Keys.RMenu);
 
                 // Required modifiers must be down; non-required modifiers must NOT be down
                 // (so e.g. plain "F1" does not fire when Ctrl+F1 is the actual press).
@@ -625,9 +686,9 @@ namespace MultiClicker.Services
                     {
                         var combo = kvp.Value;
                         if (combo == null || combo.IsEmpty) continue;
+                        combo.Normalize();
 
-                        // Key-only combos (and combos using a key as their primary
-                        // trigger) are indexed by their non-modifier key.
+                        // Key-only combos are indexed by their non-modifier key.
                         if (combo.Key != Keys.None && !combo.HasMouseButtons)
                         {
                             if (!byKey.TryGetValue(combo.Key, out var list))
@@ -670,18 +731,37 @@ namespace MultiClicker.Services
         #region Actions
         private static void HandlePasteOnAllWindows()
         {
-            Thread.Sleep(500);
-            var delay = Random.Next(
-                ConfigurationService.Current.General.MinimumFollowDelay,
-                ConfigurationService.Current.General.MaximumFollowDelay);
+            // Wait for the physical Ctrl/Alt/V of the triggering combination to be
+            // released; otherwise the user's real modifiers combine with our
+            // injected Ctrl+V inside the game (e.g. Ctrl+Alt+V instead of Ctrl+V).
+            WaitForPhysicalRelease(new[] { VK_CONTROL, VK_MENU, (int)Keys.V }, timeoutMs: 2000);
 
-            foreach (var entry in WindowManagementService.WindowHandles)
+            var windows = WindowManagementService.WindowHandles.ToList();
+            foreach (var entry in windows)
             {
-                PanelManagementService.SelectNextPanel();
+                var delay = Random.Next(
+                    ConfigurationService.Current.General.MinimumFollowDelay,
+                    ConfigurationService.Current.General.MaximumFollowDelay);
+
                 WindowManagementService.SimulateKeyPressListToWindow(
                     entry.Key,
                     new List<Keys> { Keys.LControlKey, Keys.V },
                     delay);
+            }
+        }
+
+        private static void WaitForPhysicalRelease(int[] vKeys, int timeoutMs)
+        {
+            var sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < timeoutMs)
+            {
+                bool anyDown = false;
+                foreach (var vk in vKeys)
+                {
+                    if ((GetAsyncKeyState(vk) & 0x8000) != 0) { anyDown = true; break; }
+                }
+                if (!anyDown) return;
+                Thread.Sleep(15);
             }
         }
         #endregion

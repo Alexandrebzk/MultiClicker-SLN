@@ -1,52 +1,74 @@
 using System;
 using System.Collections.Generic;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Imaging;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
-using Tesseract;
 using MultiClicker.Models;
 using System.Threading;
 using System.Windows.Forms;
-using System.Threading.Tasks;
 
 namespace MultiClicker.Services
 {
     /// <summary>
-    /// Service responsible for window management operations
+    /// Service responsible for window discovery and input broadcasting.
+    ///
+    /// Coordinate model: a broadcast click is anchored to the window the user
+    /// actually clicked (the "source"). The click point is converted to the
+    /// source's client coordinates, then mapped into each target window via
+    /// ClientToScreen. This stays correct when windows are not maximized, sit
+    /// on different monitors, or have different positions.
     /// </summary>
     public static class WindowManagementService
     {
         #region Private Constants and Fields
         private const int ALT = 0xA4;
         private const int EXTENDEDKEY = 0x1;
-        public const int SM_CYCAPTION = 4;
         private const int KEYUP = 0x2;
         private const uint Restore = 9;
-        private static readonly string OcrLanguage = "fra";
-        private static readonly string TessdataPath = @"tessdata";
-        private static readonly object TessEngineLock = new object();
-        private static TesseractEngine _ocrEngine = null;
+
         private const uint INPUT_MOUSE = 0;
+        private const uint INPUT_KEYBOARD = 1;
+        private const uint KEYEVENTF_KEYUP = 0x0002;
+        private const uint MOUSEEVENTF_MOVE = 0x0001;
         private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
         private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+        private const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
         private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+
+        // Virtual-desktop metrics (multi-monitor safe SendInput normalization).
+        private const int SM_XVIRTUALSCREEN = 76;
+        private const int SM_YVIRTUALSCREEN = 77;
+        private const int SM_CXVIRTUALSCREEN = 78;
+        private const int SM_CYVIRTUALSCREEN = 79;
 
         // Background click messages
         private const uint WM_LBUTTONDOWN = 0x0201;
         private const uint WM_LBUTTONUP = 0x0202;
-        private const uint WM_LBUTTONDBLCLK = 0x0203;
-        private const uint WM_MOUSEACTIVATE = 0x0021;
         private const int MK_LBUTTON = 0x0001;
+        private const uint WM_MOUSEMOVE = 0x0200;
+        private const uint WM_ACTIVATE = 0x0006;
+        private const int WA_CLICKACTIVE = 2;
+
+        private const uint CWP_SKIPINVISIBLE = 0x0001;
+        private const uint CWP_SKIPDISABLED = 0x0002;
+        private const uint CWP_SKIPTRANSPARENT = 0x0004;
+
+        private const uint GA_ROOT = 2;
+
+        private static readonly Random Random = new Random();
+
+        /// <summary>
+        /// True while a trigger action (broadcast, paste, group invite, ...) is
+        /// executing on the dispatcher thread. The UI window-watcher skips its
+        /// refresh while this is set so panels are never rebuilt mid-broadcast.
+        /// </summary>
+        public static volatile bool IsBroadcasting;
         #endregion
 
         #region Win32 API Declarations
-        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
         [DllImport("user32.dll")]
         public static extern int GetSystemMetrics(int nIndex);
 
@@ -63,18 +85,11 @@ namespace MultiClicker.Services
         [DllImport("user32.dll")]
         private static extern int ShowWindow(IntPtr hWnd, uint Msg);
 
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-
-        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-        static extern int GetWindowTextLength(IntPtr hWnd);
-
         [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
         static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 
-        [DllImport("user32.dll", SetLastError = true)]
-        static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        static extern int GetWindowTextLength(IntPtr hWnd);
 
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         public static extern IntPtr SendMessage(IntPtr hWnd, UInt32 Msg, IntPtr wParam, IntPtr lParam);
@@ -105,24 +120,22 @@ namespace MultiClicker.Services
         private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
 
         [DllImport("user32.dll")]
-        private static extern IntPtr RealChildWindowFromPoint(IntPtr hwndParent, POINT ptParentClientCoords);
+        private static extern IntPtr ChildWindowFromPointEx(IntPtr hwndParent, POINT pt, uint uFlags);
 
         [DllImport("user32.dll")]
-        private static extern IntPtr ChildWindowFromPointEx(IntPtr hwndParent, POINT pt, uint uFlags);
-        #endregion
+        private static extern IntPtr WindowFromPoint(POINT point);
 
-        // Background click constants
-        private const uint CWP_SKIPINVISIBLE = 0x0001;
-        private const uint CWP_SKIPDISABLED = 0x0002;
-        private const uint CWP_SKIPTRANSPARENT = 0x0004;
-        private const uint WM_MOUSEMOVE = 0x0200;
-        private const uint WM_ACTIVATE = 0x0006;
-        private const int WA_CLICKACTIVE = 2;
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);
 
-        #region Constants
-        private const uint INPUT_KEYBOARD = 1;
-        private const uint KEYEVENTF_KEYUP = 0x0002;
-        private const uint KEYEVENTF_SCANCODE = 0x0008;
+        [DllImport("user32.dll")]
+        private static extern bool GetCursorPos(out POINT lpPoint);
+
+        [DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int vKey);
+
+        [DllImport("user32.dll")]
+        private static extern short VkKeyScan(char ch);
         #endregion
 
         #region Input Structures
@@ -176,62 +189,20 @@ namespace MultiClicker.Services
 
         #region Public Properties
         /// <summary>
-        /// Dictionary containing all tracked window handles and their information
+        /// Dictionary containing all tracked window handles and their information.
+        /// Always replaced wholesale (never mutated in place) so readers on other
+        /// threads can safely snapshot the reference.
         /// </summary>
         public static Dictionary<IntPtr, WindowInfo> WindowHandles { get; private set; } = new Dictionary<IntPtr, WindowInfo>();
         #endregion
 
-        #region Public Methods
-        /// <summary>
-        /// Finds windows matching the specified title pattern
-        /// </summary>
-        /// <param name="titlePattern">The pattern to match in window titles</param>
-        /// <returns>Dictionary of window handles and their information</returns>
-        public static Dictionary<IntPtr, WindowInfo> FindWindows(string titlePattern)
-        {
-            var foundWindows = new Dictionary<IntPtr, WindowInfo>();
-
-            try
-            {
-                EnumWindows((hWnd, lParam) =>
-                {
-                    if (IsWindow(hWnd))
-                    {
-                        var windowTitle = GetWindowTitle(hWnd);
-                        if (!string.IsNullOrEmpty(windowTitle) && windowTitle.Contains(titlePattern))
-                        {
-                            var characterName = ExtractCharacterName(windowTitle, titlePattern);
-                            if (!string.IsNullOrEmpty(characterName))
-                            {
-                                foundWindows[hWnd] = new WindowInfo
-                                {
-                                    WindowName = windowTitle,
-                                    CharacterName = characterName,
-                                    RelatedPanel = null
-                                };
-                            }
-                        }
-                    }
-                    return true;
-                }, IntPtr.Zero);
-
-                WindowHandles = foundWindows;
-                Trace.WriteLine($"Found {foundWindows.Count} windows matching pattern: {titlePattern}");
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error finding windows: {ex.Message}");
-            }
-
-            return foundWindows;
-        }
-
+        #region Window discovery
         private static readonly Regex DofusVersionRegex = new Regex(@"\b(\d+\.\d+(?:\.\d+){0,2})\b", RegexOptions.Compiled);
 
         /// <summary>
         /// Enumerates running Dofus clients without mutating <see cref="WindowHandles"/>.
         /// </summary>
-        /// <param name="detectedVersion">The detected game version (longest version-like dash-separated chunk), or null if unknown.</param>
+        /// <param name="detectedVersion">The detected game version, or null if unknown.</param>
         /// <returns>The list of discovered Dofus windows.</returns>
         public static List<WindowInfo> EnumerateDofusWindows(out string detectedVersion)
         {
@@ -276,6 +247,10 @@ namespace MultiClicker.Services
                         });
                     }
                     catch { }
+                    finally
+                    {
+                        try { p.Dispose(); } catch { }
+                    }
                 }
             }
             catch (Exception ex)
@@ -287,7 +262,8 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
-        /// Discovers Dofus client windows, refreshes <see cref="WindowHandles"/>, and caches the detected game version.
+        /// Discovers Dofus client windows, refreshes <see cref="WindowHandles"/>
+        /// (in discovery order), and caches the detected game version.
         /// </summary>
         public static Dictionary<IntPtr, WindowInfo> FindDofusWindows()
         {
@@ -300,25 +276,98 @@ namespace MultiClicker.Services
                     found[wi.Handle] = wi;
             }
 
-            if (!string.IsNullOrEmpty(detectedVersion))
-            {
-                try
-                {
-                    if (ConfigurationService.Current.General.GameVersion != detectedVersion)
-                    {
-                        ConfigurationService.Current.General.GameVersion = detectedVersion;
-                        ConfigurationService.SaveConfig();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Trace.WriteLine($"Error caching detected Dofus version: {ex.Message}");
-                }
-            }
+            CacheDetectedVersion(detectedVersion);
 
             WindowHandles = found;
             Trace.WriteLine($"Found {found.Count} Dofus windows (version: {detectedVersion ?? "unknown"})");
             return found;
+        }
+
+        /// <summary>
+        /// Re-scans running Dofus clients and merges the result into
+        /// <see cref="WindowHandles"/>, preserving the user's panel order for
+        /// windows that are still alive and appending new ones at the end.
+        /// Returns true when the tracked set actually changed (window opened,
+        /// closed, or its character changed) so the UI knows to rebuild panels.
+        /// </summary>
+        public static bool SynchronizeWindowList()
+        {
+            try
+            {
+                string detectedVersion;
+                var discovered = EnumerateDofusWindows(out detectedVersion);
+                var discoveredByHandle = new Dictionary<IntPtr, WindowInfo>();
+                foreach (var wi in discovered)
+                {
+                    if (wi.Handle != IntPtr.Zero && !discoveredByHandle.ContainsKey(wi.Handle))
+                        discoveredByHandle[wi.Handle] = wi;
+                }
+
+                var current = WindowHandles;
+                bool changed = false;
+                var updated = new Dictionary<IntPtr, WindowInfo>();
+
+                // Keep still-alive windows in their existing (user-chosen) order.
+                foreach (var kvp in current)
+                {
+                    if (discoveredByHandle.TryGetValue(kvp.Key, out var fresh))
+                    {
+                        if (!string.Equals(kvp.Value.CharacterName, fresh.CharacterName, StringComparison.Ordinal))
+                        {
+                            // The user switched character on this client.
+                            kvp.Value.CharacterName = fresh.CharacterName;
+                            changed = true;
+                        }
+                        kvp.Value.WindowName = fresh.WindowName;
+                        updated[kvp.Key] = kvp.Value;
+                    }
+                    else
+                    {
+                        changed = true; // window closed
+                    }
+                }
+
+                // Append newly discovered windows at the end.
+                foreach (var kvp in discoveredByHandle)
+                {
+                    if (!updated.ContainsKey(kvp.Key))
+                    {
+                        updated[kvp.Key] = kvp.Value;
+                        changed = true;
+                    }
+                }
+
+                if (changed)
+                {
+                    WindowHandles = updated;
+                    Trace.WriteLine($"Window list synchronized: {updated.Count} Dofus windows tracked.");
+                }
+
+                CacheDetectedVersion(detectedVersion);
+                return changed;
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error synchronizing window list: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static void CacheDetectedVersion(string detectedVersion)
+        {
+            if (string.IsNullOrEmpty(detectedVersion)) return;
+            try
+            {
+                if (ConfigurationService.Current.General.GameVersion != detectedVersion)
+                {
+                    ConfigurationService.Current.General.GameVersion = detectedVersion;
+                    ConfigurationService.SaveConfig();
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error caching detected Dofus version: {ex.Message}");
+            }
         }
 
         private static string ExtractDofusCharacterName(string windowTitle)
@@ -337,46 +386,62 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
-        /// Checks if the specified handle is related to tracked windows
+        /// Checks if the specified handle is a tracked window.
         /// </summary>
-        /// <param name="handle">The window handle to check</param>
-        /// <returns>True if the handle is tracked, false otherwise</returns>
         public static bool IsRelatedHandle(IntPtr handle)
         {
             return WindowHandles.ContainsKey(handle);
         }
 
         /// <summary>
+        /// True when the given screen point is over a tracked window (resolves
+        /// child windows to their top-level ancestor first).
+        /// </summary>
+        public static bool IsPointOverTrackedWindow(POINT screenPoint)
+        {
+            try
+            {
+                var hWnd = WindowFromPoint(screenPoint);
+                if (hWnd == IntPtr.Zero) return false;
+                if (WindowHandles.ContainsKey(hWnd)) return true;
+                var root = GetAncestor(hWnd, GA_ROOT);
+                return root != IntPtr.Zero && WindowHandles.ContainsKey(root);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Reorders the WindowHandles dictionary to match the order of character names provided
         /// </summary>
-        /// <param name="orderedCharacterNames">List of character names in the desired order</param>
         public static void ReorderWindowHandles(List<string> orderedCharacterNames)
         {
             try
             {
+                var current = WindowHandles;
                 var reorderedHandles = new Dictionary<IntPtr, WindowInfo>();
-                
-                // Add windows in the order specified by orderedCharacterNames
+
                 foreach (var characterName in orderedCharacterNames)
                 {
-                    var windowEntry = WindowHandles.FirstOrDefault(kvp => kvp.Value.CharacterName == characterName);
+                    var windowEntry = current.FirstOrDefault(kvp => kvp.Value.CharacterName == characterName);
                     if (windowEntry.Key != IntPtr.Zero)
                     {
                         reorderedHandles[windowEntry.Key] = windowEntry.Value;
                     }
                 }
-                
-                // Add any remaining windows that weren't in the ordered list
-                foreach (var kvp in WindowHandles)
+
+                foreach (var kvp in current)
                 {
                     if (!reorderedHandles.ContainsKey(kvp.Key))
                     {
                         reorderedHandles[kvp.Key] = kvp.Value;
                     }
                 }
-                
+
                 WindowHandles = reorderedHandles;
-                Trace.WriteLine($"Reordered WindowHandles to match panel order. Total windows: {WindowHandles.Count}");
+                Trace.WriteLine($"Reordered WindowHandles to match panel order. Total windows: {reorderedHandles.Count}");
             }
             catch (Exception ex)
             {
@@ -385,14 +450,29 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
-        /// Sets the specified window to foreground - exact legacy behavior
+        /// Registers a window discovered outside the normal enumeration path
+        /// (manual-mode panels matched by process name). Replaces the dictionary
+        /// wholesale to preserve snapshot semantics for concurrent readers.
         /// </summary>
-        /// <param name="handle">The window handle</param>
+        public static void RegisterWindow(IntPtr handle, WindowInfo info)
+        {
+            var current = WindowHandles;
+            if (current.ContainsKey(handle)) return;
+            var updated = new Dictionary<IntPtr, WindowInfo>(current) { [handle] = info };
+            WindowHandles = updated;
+        }
+        #endregion
+
+        #region Focus helpers
+        /// <summary>
+        /// Sets the specified window to foreground. The injected ALT tap grants
+        /// this process the right to change the foreground window; the event is
+        /// flagged LLKHF_INJECTED and therefore ignored by our own hooks.
+        /// </summary>
         public static void SetHandleToForeground(IntPtr handle)
         {
             try
             {
-
                 if (IsIconic(handle))
                 {
                     ShowWindow(handle, Restore);
@@ -402,7 +482,6 @@ namespace MultiClicker.Services
                 keybd_event((byte)ALT, 0x45, EXTENDEDKEY | KEYUP, 0);
 
                 SetForegroundWindow(handle);
-
             }
             catch (Exception ex)
             {
@@ -411,563 +490,127 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
-        /// Performs a click operation on windows at the specified position
+        /// Waits until the given window actually is the foreground window.
+        /// SetForegroundWindow is asynchronous in practice; injecting input
+        /// before the switch completes sends it to the wrong window.
         /// </summary>
-        /// <param name="position">The position to click</param>
-        /// <param name="isNoDelay">Whether to use no delay mode</param>
-        public static void PerformWindowClick(POINT position, bool isNoDelay)
+        private static bool WaitForForeground(IntPtr handle, int timeoutMs)
         {
-            try
+            if (GetForegroundWindow() == handle) return true;
+            var sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < timeoutMs)
             {
-                var delay = !isNoDelay ? GetRandomDelay() : 0;
-                bool background = ConfigurationService.Current.General.PreferBackgroundClicks;
-
-                // Snapshot selected panel and window list to avoid concurrent modification
-                var selectedPanel = PanelManagementService.SelectedPanel;
-                var windowList = GetReorderedWindowList(selectedPanel);
-
-                foreach (var windowEntry in windowList)
-                {
-                    int clickDelay = isNoDelay ? 200 : delay;
-
-                    PerformClickOnWindow(windowEntry.Key, position, clickDelay);
-
-                    // Background clicks must not change focus or rotate the active panel
-                    // so the user can keep iterating the same selected character.
-                    if (!background)
-                    {
-                        SafeSelectNextPanel();
-                    }
-
-                    Thread.Sleep(5);
-                }
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error performing window click: {ex.Message}");
-            }
-        }
-
-        private static void SafeSelectNextPanel()
-        {
-            try
-            {
-                var flow = PanelManagementService.FlowLayoutPanel;
-                if (flow != null && flow.InvokeRequired)
-                {
-                    flow.BeginInvoke((Action)(() => PanelManagementService.SelectNextPanel()));
-                }
-                else
-                {
-                    PanelManagementService.SelectNextPanel();
-                }
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"SafeSelectNextPanel failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Performs a double click operation on windows at the specified position
-        /// </summary>
-        /// <param name="position">The position to double click</param>
-        public static void PerformWindowDoubleClick(POINT position)
-        {
-            try
-            {
-                var delay = GetRandomDelay();
-                bool background = ConfigurationService.Current.General.PreferBackgroundClicks;
-                var selectedPanel = PanelManagementService.SelectedPanel;
-                var windowList = GetReorderedWindowList(selectedPanel);
-
-                foreach (var windowEntry in windowList)
-                {
-                    try
-                    {
-                        Thread.Sleep(100);
-                        PerformClickOnWindow(windowEntry.Key, position, 50);
-                        PerformClickOnWindow(windowEntry.Key, position, 50);
-
-                        if (!background)
-                        {
-                            SafeSelectNextPanel();
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Trace.WriteLine($"Error double clicking on window {windowEntry.Value.WindowName}: {ex.Message}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error performing window double click: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Simulates a key combination with modifiers
-        /// </summary>
-        /// <param name="windowHandle">The target window handle</param>
-        /// <param name="keyCombination">The key combination to simulate</param>
-        public static void SimulateKeyCombination(IntPtr windowHandle, KeyCombination keyCombination)
-        {
-            try
-            {
-                if (keyCombination.Key == Keys.None) return;
-
-                SetHandleToForeground(windowHandle);
-                Thread.Sleep(25);
-
-                var keys = new List<Keys>();
-                
-                // Add modifiers first
-                if (keyCombination.Control) keys.Add(Keys.LControlKey);
-                if (keyCombination.Shift) keys.Add(Keys.LShiftKey);
-                if (keyCombination.Alt) keys.Add(Keys.LMenu);
-                
-                // Add the main key
-                keys.Add(keyCombination.Key);
-
-                // Simulate the key combination
-                SimulateKeyPressListToWindow(windowHandle, keys, 0);
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error simulating key combination for window {windowHandle}: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Simulates key press with special handling for TAB and ENTER keys using scan codes
-        /// </summary>
-        /// <param name="windowHandle">The target window handle</param>
-        /// <param name="key">The key to press</param>
-        public static void SimulateKeyPress(IntPtr windowHandle, Keys key)
-        {
-            try
-            {
-                SetHandleToForeground(windowHandle);
-                Thread.Sleep(25);
-                
-                if (key == Keys.Tab)
-                {
-                    SendTab(windowHandle);
-                    return;
-                }
-                
-                if (key == Keys.Enter || key == Keys.Return)
-                {
-                    SendEnter(windowHandle);
-                    return;
-                }
-                
-                INPUT[] inputs = new INPUT[2];
-                
-                inputs[0] = new INPUT
-                {
-                    type = INPUT_KEYBOARD,
-                    u = new InputUnion
-                    {
-                        ki = new KEYBDINPUT
-                        {
-                            wVk = (ushort)key,
-                            dwFlags = 0
-                        }
-                    }
-                };
-                
-                inputs[1] = new INPUT
-                {
-                    type = INPUT_KEYBOARD,
-                    u = new InputUnion
-                    {
-                        ki = new KEYBDINPUT
-                        {
-                            wVk = (ushort)key,
-                            dwFlags = KEYEVENTF_KEYUP
-                        }
-                    }
-                };
-                
-                SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error simulating key press for window {windowHandle}: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Simulates a list of key presses on the specified window with delay - exact legacy behavior
-        /// </summary>
-        /// <param name="windowHandle">The target window handle</param>
-        /// <param name="keys">The list of keys to press</param>
-        /// <param name="delay">The delay between operations</param>
-        public static void SimulateKeyPressListToWindow(IntPtr windowHandle, List<Keys> keys, int delay)
-        {
-            SetHandleToForeground(windowHandle);
-            Thread.Sleep(10);
-
-            List<INPUT> inputs = new List<INPUT>();
-
-            foreach (var key in keys)
-            {
-                if (key == Keys.Tab)
-                {
-                    SendTab(windowHandle);
-                    continue;
-                }
-
-                if (key == Keys.Enter || key == Keys.Return)
-                {
-                    SendEnter(windowHandle);
-                    continue;
-                }
-                INPUT input = new INPUT();
-                input.type = INPUT_KEYBOARD;
-                input.u.ki = new KEYBDINPUT();
-                input.u.ki.wVk = (ushort)key;
-                input.u.ki.wScan = 0;
-                input.u.ki.dwFlags = 0;
-                input.u.ki.time = 0;
-                input.u.ki.dwExtraInfo = IntPtr.Zero;
-                inputs.Add(input);
-            }
-
-            for (int i = keys.Count - 1; i >= 0; i--)
-            {
-                if (keys[i] == Keys.Tab || keys[i] == Keys.Enter || keys[i] == Keys.Return)
-                {
-                    continue;
-                }
-
-                INPUT input = new INPUT();
-                input.type = INPUT_KEYBOARD;
-                input.u.ki = new KEYBDINPUT();
-                input.u.ki.wVk = (ushort)keys[i];
-                input.u.ki.wScan = 0;
-                input.u.ki.dwFlags = KEYEVENTF_KEYUP;
-                input.u.ki.time = 0;
-                input.u.ki.dwExtraInfo = IntPtr.Zero;
-                inputs.Add(input);
-            }
-
-            if (inputs.Count > 0)
-            {
-                SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf(typeof(INPUT)));
-            }
-
-            Thread.Sleep(10);
-        }
-
-        /// <summary>
-        /// Sends TAB key using keybd_event with scan codes
-        /// </summary>
-        /// <param name="windowHandle">The target window handle</param>
-        public static void SendTab(IntPtr windowHandle)
-        {
-            try
-            {
-                keybd_event((byte)Keys.Tab, 0x0F, 0, 0);
                 Thread.Sleep(5);
-                keybd_event((byte)Keys.Tab, 0x0F, KEYUP, 0);
+                if (GetForegroundWindow() == handle) return true;
             }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error sending TAB key to window {windowHandle}: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Sends ENTER key using keybd_event with scan codes
-        /// </summary>
-        /// <param name="windowHandle">The target window handle</param>
-        public static void SendEnter(IntPtr windowHandle)
-        {
-            try
-            {
-                keybd_event((byte)Keys.Enter, 0x1C, 0, 0);
-                Thread.Sleep(5);
-                keybd_event((byte)Keys.Enter, 0x1C, KEYUP, 0);
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error sending ENTER key to window {windowHandle}: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Sends text to multiple windows
-        /// </summary>
-        /// <param name="text">The text to send</param>
-        /// <param name="targetWindows">The list of target windows</param>
-        public static void SendTextToWindows(string text, List<KeyValuePair<IntPtr, WindowInfo>> targetWindows)
-        {
-            try
-            {
-                foreach (var windowEntry in targetWindows)
-                {
-                    SetHandleToForeground(windowEntry.Key);
-                    var discussionKeybind = ConfigurationService.Current.Keybinds[TRIGGERS.DOFUS_OPEN_DISCUSSION];
-                    SimulateKeyCombination(windowEntry.Key, discussionKeybind);
-                    Thread.Sleep(50);
-
-                    foreach (char c in text)
-                    {
-                        Keys key;
-                        bool needsShift = false;
-                        
-                        switch (c)
-                        {
-                            case '/':
-                                key = Keys.OemQuestion;
-                                needsShift = true;
-                                break;
-                            case ' ':
-                                key = Keys.Space;
-                                break;
-                            default:
-                                var keyCode = VkKeyScan(c);
-                                if (keyCode == -1)
-                                {
-                                    Trace.WriteLine($"Warning: Could not convert character '{c}' to key code");
-                                    continue;
-                                }
-                                else
-                                {
-                                    key = (Keys)(keyCode & 0xFF);
-                                    needsShift = (keyCode & 0x100) != 0;
-                                }
-                                break;
-                        }
-                        
-                        if (needsShift)
-                        {
-                            SimulateKeyPressListToWindow(windowEntry.Key, new List<Keys> { Keys.LShiftKey, key }, 0);
-                        }
-                        else
-                        {
-                            SimulateKeyPress(windowEntry.Key, key);
-                        }
-                    }
-
-                    SendEnter(windowEntry.Key);
-                }
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error sending text to windows: {ex.Message}");
-            }
-        }
-
-        public static void GroupCharacters()
-        {
-            try
-            {
-                var selectedPanel = PanelManagementService.SelectedPanel;
-                if (selectedPanel == null)
-                {
-                    Trace.WriteLine("No panel selected for group characters");
-                    return;
-                }
-
-                var selectedWindow = WindowHandles.FirstOrDefault(w => w.Value.RelatedPanel == selectedPanel);
-                if (selectedWindow.Key == IntPtr.Zero)
-                {
-                    Trace.WriteLine("No window found for selected panel");
-                    return;
-                }
-
-                Trace.WriteLine($"Sending group invitations from SELECTED panel: {selectedWindow.Value.CharacterName}");
-
-                var otherWindows = WindowHandles.Where(w => w.Key != selectedWindow.Key).ToList();
-
-                var discussionKeybind = ConfigurationService.Current.Keybinds[TRIGGERS.DOFUS_OPEN_DISCUSSION];
-                SimulateKeyCombination(selectedWindow.Key, discussionKeybind);
-                Thread.Sleep(100);
-
-                foreach (var windowEntry in otherWindows)
-                {
-                    var windowInfo = windowEntry.Value;
-                    var characterName = windowInfo.CharacterName;
-
-                    if (string.IsNullOrEmpty(characterName))
-                    {
-                        Trace.WriteLine("Character name is empty, cannot send group characters command");
-                        continue;
-                    }
-
-                    Trace.WriteLine($"Sending group characters invitation for character: {characterName}");
-
-                    SetHandleToForeground(selectedWindow.Key);
-                    Thread.Sleep(50);
-
-                    var inviteCommand = $"/invite {characterName}";
-                    foreach (char c in inviteCommand)
-                    {
-                        Keys key;
-                        bool needsShift = false;
-
-                        switch (c)
-                        {
-                            case '/':
-                                key = Keys.OemQuestion;
-                                needsShift = true;
-                                break;
-                            case ' ':
-                                key = Keys.Space;
-                                break;
-                            default:
-                                var keyCode = VkKeyScan(c);
-                                if (keyCode == -1)
-                                {
-                                    Trace.WriteLine($"Warning: Could not convert character '{c}' to key code");
-                                    continue;
-                                }
-                                else
-                                {
-                                    key = (Keys)(keyCode & 0xFF);
-                                    needsShift = (keyCode & 0x100) != 0; // Check if Shift is needed
-                                }
-                                break;
-                        }
-
-                        if (needsShift)
-                        {
-                            SimulateKeyPressListToWindow(selectedWindow.Key, new List<Keys> { Keys.LShiftKey, key }, 0);
-                        }
-                        else
-                        {
-                            SimulateKeyPress(selectedWindow.Key, key);
-                        }
-                    }
-
-                    // Use optimized SendEnter function instead of SimulateKeyPress for better ENTER handling
-                    SendEnter(selectedWindow.Key);
-
-                    Trace.WriteLine($"Group characters invitation sent successfully for: {characterName}");
-                }
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Error in GroupCharacters: {ex.Message}");
-            }
+            var ok = GetForegroundWindow() == handle;
+            if (!ok) Trace.WriteLine($"WaitForForeground timed out for window {handle}.");
+            return ok;
         }
         #endregion
 
-        #region Private Methods
+        #region Click broadcasting
         /// <summary>
-        /// Gets the title of the specified window
+        /// Broadcasts a click (or double click) to every tracked window. The
+        /// click point is anchored to the source window under the cursor and
+        /// mapped into each target's client area.
         /// </summary>
-        /// <param name="hWnd">The window handle</param>
-        /// <returns>The window title</returns>
-        private static string GetWindowTitle(IntPtr hWnd)
+        public static void BroadcastClick(POINT screenPoint, bool doubleClick)
         {
             try
             {
-                var length = GetWindowTextLength(hWnd);
-                if (length == 0) return string.Empty;
+                var handles = WindowHandles;
+                if (handles.Count == 0) return;
 
-                var builder = new StringBuilder(length + 1);
-                GetWindowText(hWnd, builder, builder.Capacity);
-                return builder.ToString();
-            }
-            catch
-            {
-                return string.Empty;
-            }
-        }
-
-        /// <summary>
-        /// Extracts character name from window title - takes only the first word until the first space
-        /// </summary>
-        /// <param name="windowTitle">The full window title</param>
-        /// <param name="titlePattern">The pattern used to identify game windows</param>
-        /// <returns>The extracted character name (first word only)</returns>
-        private static string ExtractCharacterName(string windowTitle, string titlePattern)
-        {
-            try
-            {
-                var index = windowTitle.IndexOf(titlePattern, StringComparison.OrdinalIgnoreCase);
-                if (index > 0)
+                // Resolve the source window: the tracked window under the click,
+                // falling back to the tracked foreground window.
+                IntPtr source = ResolveTrackedWindowAt(screenPoint, handles);
+                if (source == IntPtr.Zero)
                 {
-                    var fullName = windowTitle.Substring(0, index).Trim();
-                    
-                    // Take only the first word until the first space
-                    var spaceIndex = fullName.IndexOf(' ');
-                    if (spaceIndex > 0)
-                    {
-                        return fullName.Substring(0, spaceIndex).Trim();
-                    }
-                    
-                    return fullName;
+                    var fg = GetForegroundWindow();
+                    if (handles.ContainsKey(fg)) source = fg;
                 }
-                
-                // If no pattern found, take the first word of the entire title
-                var firstSpaceIndex = windowTitle.IndexOf(' ');
-                if (firstSpaceIndex > 0)
+                if (source == IntPtr.Zero)
                 {
-                    return windowTitle.Substring(0, firstSpaceIndex).Trim();
-                }
-                
-                return windowTitle;
-            }
-            catch
-            {
-                return windowTitle;
-            }
-        }
-
-        /// <summary>
-        /// Gets a random delay based on configuration (optimized for faster response)
-        /// </summary>
-        /// <returns>Random delay in milliseconds</returns>
-        private static int GetRandomDelay()
-        {
-            var config = Services.ConfigurationService.Current.General;
-            var random = new Random();
-            var minDelay = Math.Max(5, config.MinimumFollowDelay);
-            var maxDelay = Math.Max(minDelay + 5, config.MaximumFollowDelay);
-            return random.Next(minDelay, maxDelay);
-        }
-
-        /// <summary>
-        /// Performs a click operation on the specified window with retry mechanism
-        /// </summary>
-        /// <param name="windowHandle">The target window handle</param>
-        /// <param name="position">The position to click</param>
-        private static void PerformClickOnWindow(IntPtr windowHandle, POINT position, int delay)
-        {
-            if (!IsWindow(windowHandle))
-            {
-                return;
-            }
-
-            try
-            {
-                RECT windowRect = new RECT();
-                GetWindowRect(windowHandle, ref windowRect);
-
-                int screenX = windowRect.Left + position.X;
-                int screenY = windowRect.Top + position.Y;
-
-                if (ConfigurationService.Current.General.PreferBackgroundClicks)
-                {
-                    // In background mode, never silently steal the cursor: just log on failure.
-                    if (!TryPerformBackgroundClick(windowHandle, screenX, screenY, delay, doubleClick: false))
-                    {
-                        Trace.WriteLine($"Background click delivery failed for window {windowHandle}.");
-                    }
+                    Trace.WriteLine("Broadcast aborted: click origin is not over a tracked window.");
                     return;
                 }
 
-                PerformForegroundClick(windowHandle, screenX, screenY, delay);
+                var clientPoint = screenPoint;
+                if (!ScreenToClient(source, ref clientPoint))
+                {
+                    Trace.WriteLine("Broadcast aborted: ScreenToClient failed for source window.");
+                    return;
+                }
+
+                bool background = ConfigurationService.Current.General.PreferBackgroundClicks;
+                var targets = GetReorderedWindowList(PanelManagementService.SelectedPanel);
+
+                POINT originalCursor;
+                bool hasCursor = GetCursorPos(out originalCursor);
+
+                // Windows refuses foreground changes while a mouse button is
+                // physically held (input-capture lock). The trigger fires on
+                // button-DOWN, so without this wait the very first target of the
+                // sweep loses its focus switch and its click lands on the still
+                // -foreground source window instead.
+                if (!background)
+                {
+                    WaitForPhysicalMouseRelease(1000);
+                }
+
+                foreach (var entry in targets)
+                {
+                    var target = entry.Key;
+                    if (!IsWindow(target)) continue;
+
+                    var targetPoint = clientPoint;
+                    if (!ClientToScreen(target, ref targetPoint)) continue;
+
+                    int delay = GetRandomDelay();
+
+                    if (background)
+                    {
+                        if (!TryPerformBackgroundClick(target, targetPoint.X, targetPoint.Y, delay, doubleClick))
+                        {
+                            Trace.WriteLine($"Background click delivery failed for '{entry.Value.CharacterName}'.");
+                        }
+                    }
+                    else if (!PerformForegroundClick(target, targetPoint.X, targetPoint.Y, delay, doubleClick))
+                    {
+                        Trace.WriteLine($"Skipped '{entry.Value.CharacterName}': window refused the foreground switch.");
+                    }
+
+                    Thread.Sleep(Math.Max(5, delay / 4));
+                }
+
+                if (!background && hasCursor)
+                {
+                    // The reordered target list ends on the selected window, so
+                    // focus lands back where the user started; also put the real
+                    // cursor back where it was.
+                    MoveCursorAbsolute(originalCursor.X, originalCursor.Y);
+                }
             }
             catch (Exception ex)
             {
-                Trace.WriteLine($"Error performing click on window: {ex.Message}");
+                Trace.WriteLine($"Error broadcasting click: {ex.Message}");
+            }
+        }
+
+        private static IntPtr ResolveTrackedWindowAt(POINT screenPoint, Dictionary<IntPtr, WindowInfo> handles)
+        {
+            try
+            {
+                var hWnd = WindowFromPoint(screenPoint);
+                if (hWnd == IntPtr.Zero) return IntPtr.Zero;
+                if (handles.ContainsKey(hWnd)) return hWnd;
+                var root = GetAncestor(hWnd, GA_ROOT);
+                return root != IntPtr.Zero && handles.ContainsKey(root) ? root : IntPtr.Zero;
+            }
+            catch
+            {
+                return IntPtr.Zero;
             }
         }
 
@@ -1021,8 +664,11 @@ namespace MultiClicker.Services
 
                 if (doubleClick)
                 {
-                    Thread.Sleep(Math.Max(1, delay / 4));
-                    SendMessage(target, WM_LBUTTONDBLCLK, (IntPtr)MK_LBUTTON, (IntPtr)lParam);
+                    // A second down/up pair within double-click time. Games track
+                    // their own click timing; WM_LBUTTONDBLCLK is only generated
+                    // for CS_DBLCLKS window classes and Unity ignores it.
+                    Thread.Sleep(50);
+                    SendMessage(target, WM_LBUTTONDOWN, (IntPtr)MK_LBUTTON, (IntPtr)lParam);
                     Thread.Sleep(Math.Max(1, delay / 4));
                     SendMessage(target, WM_LBUTTONUP, IntPtr.Zero, (IntPtr)lParam);
                 }
@@ -1038,319 +684,414 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
-        /// Original SendInput-based click path. Steals the real cursor; used as a fallback.
+        /// SendInput-based click path: brings the target to the foreground, waits
+        /// for the switch to actually complete, then clicks at the target point.
+        /// Returns false WITHOUT clicking when the window never reached the
+        /// foreground - clicking anyway would deliver the click to whichever
+        /// window is stacked at those coordinates (usually the wrong client).
         /// </summary>
-        private static void PerformForegroundClick(IntPtr windowHandle, int screenX, int screenY, int delay)
+        private static bool PerformForegroundClick(IntPtr windowHandle, int screenX, int screenY, int delay, bool doubleClick)
         {
-            int normalizedX = (screenX * 65535) / System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width;
-            int normalizedY = (screenY * 65535) / System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height;
-
-            INPUT[] inputs = new INPUT[2];
-
-            inputs[0] = new INPUT
+            bool focused = false;
+            for (int attempt = 0; attempt < 2 && !focused; attempt++)
             {
-                type = INPUT_MOUSE,
-                u = new InputUnion
-                {
-                    mi = new MOUSEINPUT
-                    {
-                        dx = normalizedX,
-                        dy = normalizedY,
-                        mouseData = 0,
-                        dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN,
-                        time = 0,
-                        dwExtraInfo = IntPtr.Zero
-                    }
-                }
-            };
+                SetHandleToForeground(windowHandle);
+                focused = WaitForForeground(windowHandle, 250);
+            }
+            if (!focused) return false;
 
-            inputs[1] = new INPUT
+            Thread.Sleep(Math.Max(1, delay / 4));
+            SendAbsoluteLeftClick(screenX, screenY);
+            if (doubleClick)
             {
-                type = INPUT_MOUSE,
-                u = new InputUnion
-                {
-                    mi = new MOUSEINPUT
-                    {
-                        dx = normalizedX,
-                        dy = normalizedY,
-                        mouseData = 0,
-                        dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP,
-                        time = 0,
-                        dwExtraInfo = IntPtr.Zero
-                    }
-                }
-            };
-
-            Thread.Sleep(delay / 2);
-            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
-            Thread.Sleep(delay / 2);
+                Thread.Sleep(60);
+                SendAbsoluteLeftClick(screenX, screenY);
+            }
+            Thread.Sleep(Math.Max(1, delay / 4));
+            return true;
         }
 
         /// <summary>
-        /// Fills sell price based on the foreground window using OCR - exact legacy implementation
+        /// Waits until every physical mouse button is released. The button that
+        /// triggered a broadcast is still down when the action starts, and a held
+        /// button blocks SetForegroundWindow system-wide.
         /// </summary>
-        public static void FillSellPriceBasedOnForeGroundWindow()
+        private static void WaitForPhysicalMouseRelease(int timeoutMs)
         {
-            Trace.WriteLine("Starting price analysis");
-            
-            var sellCurrentModeValue = GetRectangleFromPosition(ConfigurationService.Current.Positions[TRIGGERS_POSITIONS.SELL_CURRENT_MODE]);
-            var sellLot1Value = GetRectangleFromPosition(ConfigurationService.Current.Positions[TRIGGERS_POSITIONS.SELL_LOT_1]);
-            var sellLot10Value = GetRectangleFromPosition(ConfigurationService.Current.Positions[TRIGGERS_POSITIONS.SELL_LOT_10]);
-            var sellLot100Value = GetRectangleFromPosition(ConfigurationService.Current.Positions[TRIGGERS_POSITIONS.SELL_LOT_100]);
-            var sellLot1000Value = GetRectangleFromPosition(ConfigurationService.Current.Positions[TRIGGERS_POSITIONS.SELL_LOT_1000]);
-
-            Dictionary<Rectangle, int> ValuesMap = new Dictionary<Rectangle, int>
+            int[] buttons = { 0x01, 0x02, 0x04, 0x05, 0x06 }; // L, R, M, X1, X2
+            var sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < timeoutMs)
             {
-                {sellCurrentModeValue, 0},
-                {sellLot1Value, 0},
-                {sellLot10Value, 0},
-                {sellLot100Value, 0},
-                {sellLot1000Value, 0},
-            };
-
-            try
-            {
-                InitializeOCREngine();
-                if (_ocrEngine == null)
+                bool anyDown = false;
+                foreach (var vk in buttons)
                 {
-                    Trace.WriteLine("OCR engine not available");
-                    return;
+                    if ((GetAsyncKeyState(vk) & 0x8000) != 0) { anyDown = true; break; }
                 }
+                if (!anyDown) return;
+                Thread.Sleep(10);
+            }
+            Trace.WriteLine("Proceeding with broadcast although a mouse button is still held down.");
+        }
 
-                lock (TessEngineLock)
+        /// <summary>
+        /// Sends a left click at absolute screen coordinates, normalized against
+        /// the virtual desktop so multi-monitor setups are addressed correctly.
+        /// </summary>
+        private static void SendAbsoluteLeftClick(int screenX, int screenY)
+        {
+            if (!TryNormalizeToVirtualDesktop(screenX, screenY, out var nx, out var ny)) return;
+
+            var inputs = new INPUT[3];
+            inputs[0] = MouseInput(nx, ny, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK);
+            inputs[1] = MouseInput(nx, ny, MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK);
+            inputs[2] = MouseInput(nx, ny, MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK);
+            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+        }
+
+        private static void MoveCursorAbsolute(int screenX, int screenY)
+        {
+            if (!TryNormalizeToVirtualDesktop(screenX, screenY, out var nx, out var ny)) return;
+            var inputs = new[] { MouseInput(nx, ny, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK) };
+            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+        }
+
+        private static bool TryNormalizeToVirtualDesktop(int screenX, int screenY, out int nx, out int ny)
+        {
+            nx = ny = 0;
+            int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            if (vw <= 1 || vh <= 1) return false;
+            nx = (int)(((screenX - vx) * 65535L) / (vw - 1));
+            ny = (int)(((screenY - vy) * 65535L) / (vh - 1));
+            return true;
+        }
+
+        private static INPUT MouseInput(int dx, int dy, uint flags)
+        {
+            return new INPUT
+            {
+                type = INPUT_MOUSE,
+                u = new InputUnion
                 {
-                    _ocrEngine.SetVariable("tessedit_char_whitelist", "0123456789");
-
-                    foreach (var elt in ValuesMap.Keys.ToList())
+                    mi = new MOUSEINPUT
                     {
-                        using (var originalBitmap = CaptureWindowArea((IntPtr)PanelManagementService.SelectedPanel.Tag, elt))
-                        using (var preprocessedBitmap = PreprocessForOCR(originalBitmap))
-                        using (var pix = PixConverter.ToPix(preprocessedBitmap))
-                        using (var page = _ocrEngine.Process(pix, PageSegMode.SingleLine))
-                        {
-                            string recognizedText = Regex.Replace(page.GetText(), @"\s+", "");
-                            Match match = Regex.Match(recognizedText, @"\d+");
-
-                            if (match.Success)
-                            {
-                                string firstSequenceOfDigits = match.Value;
-                                Trace.WriteLine($"Recognized price: {recognizedText}");
-                                if (int.TryParse(firstSequenceOfDigits, out int parsedValue))
-                                {
-                                    ValuesMap[elt] = parsedValue;
-                                }
-                                else
-                                {
-                                    Trace.WriteLine($"Failed to parse first sequence of digits: {firstSequenceOfDigits}");
-                                }
-                            }
-                            else
-                            {
-                                Trace.WriteLine("No digits found in recognized text.");
-                            }
-                        }
+                        dx = dx,
+                        dy = dy,
+                        mouseData = 0,
+                        dwFlags = flags,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
                     }
                 }
-                
-                if (ValuesMap[sellCurrentModeValue] == 0)
-                {
-                    return;
-                }
-                
-                var AmountToFill = 0;
-                switch (ValuesMap[sellCurrentModeValue])
-                {
-                    case 1:
-                        AmountToFill = ValuesMap[sellLot1Value];
-                        break;
-                    case 10:
-                        AmountToFill = ValuesMap[sellLot10Value];
-                        break;
-                    case 100:
-                        AmountToFill = ValuesMap[sellLot100Value];
-                        break;
-                }
-                AmountToFill = int.Parse(AmountToFill.ToString().Trim());
+            };
+        }
+        #endregion
 
-                Trace.WriteLine($"Amount to fill: {AmountToFill - 1}; current sell quantity: {ValuesMap[sellCurrentModeValue]}; recognized selling price: {AmountToFill}");
-                System.Threading.Thread.Sleep(100);
-                SendKeys.SendWait("^a");
-                System.Threading.Thread.Sleep(200);
-                SendKeys.SendWait("{DELETE}");
-                SendKeys.SendWait((AmountToFill - 1).ToString().Trim());
+        #region Key simulation
+        /// <summary>
+        /// Simulates a key combination with modifiers on the target window.
+        /// </summary>
+        public static void SimulateKeyCombination(IntPtr windowHandle, KeyCombination keyCombination)
+        {
+            try
+            {
+                if (keyCombination.Key == Keys.None) return;
+
+                var keys = new List<Keys>();
+                if (keyCombination.Control) keys.Add(Keys.LControlKey);
+                if (keyCombination.Shift) keys.Add(Keys.LShiftKey);
+                if (keyCombination.Alt) keys.Add(Keys.LMenu);
+                keys.Add(keyCombination.Key);
+
+                SimulateKeyPressListToWindow(windowHandle, keys, 0);
             }
             catch (Exception ex)
             {
-                Trace.WriteLine($"HDV OCR processing failed: {ex.Message}, Trace : {ex.StackTrace}");
+                Trace.WriteLine($"Error simulating key combination for window {windowHandle}: {ex.Message}");
             }
-            Trace.WriteLine("-------------------------");
         }
 
         /// <summary>
-        /// Initializes the OCR engine if not already initialized
+        /// Simulates a key press with special handling for TAB and ENTER keys using scan codes.
         /// </summary>
-        private static void InitializeOCREngine()
+        public static void SimulateKeyPress(IntPtr windowHandle, Keys key)
         {
-            if (_ocrEngine == null)
+            try
             {
-                lock (TessEngineLock)
+                SetHandleToForeground(windowHandle);
+                WaitForForeground(windowHandle, 250);
+
+                if (key == Keys.Tab)
                 {
-                    if (_ocrEngine == null)
+                    SendTab(windowHandle);
+                    return;
+                }
+
+                if (key == Keys.Enter || key == Keys.Return)
+                {
+                    SendEnter(windowHandle);
+                    return;
+                }
+
+                var inputs = new INPUT[2];
+                inputs[0] = KeyInput(key, 0);
+                inputs[1] = KeyInput(key, KEYEVENTF_KEYUP);
+                SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error simulating key press for window {windowHandle}: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Simulates a chord: all keys pressed together (in order), then released
+        /// in reverse order, sent as a single atomic SendInput batch.
+        /// </summary>
+        public static void SimulateKeyPressListToWindow(IntPtr windowHandle, List<Keys> keys, int delay)
+        {
+            SetHandleToForeground(windowHandle);
+            WaitForForeground(windowHandle, 250);
+
+            var inputs = new List<INPUT>();
+
+            foreach (var key in keys)
+            {
+                if (key == Keys.Tab)
+                {
+                    SendTab(windowHandle);
+                    continue;
+                }
+
+                if (key == Keys.Enter || key == Keys.Return)
+                {
+                    SendEnter(windowHandle);
+                    continue;
+                }
+                inputs.Add(KeyInput(key, 0));
+            }
+
+            for (int i = keys.Count - 1; i >= 0; i--)
+            {
+                if (keys[i] == Keys.Tab || keys[i] == Keys.Enter || keys[i] == Keys.Return)
+                {
+                    continue;
+                }
+                inputs.Add(KeyInput(keys[i], KEYEVENTF_KEYUP));
+            }
+
+            if (inputs.Count > 0)
+            {
+                SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf(typeof(INPUT)));
+            }
+
+            Thread.Sleep(Math.Max(10, delay));
+        }
+
+        private static INPUT KeyInput(Keys key, uint flags)
+        {
+            return new INPUT
+            {
+                type = INPUT_KEYBOARD,
+                u = new InputUnion
+                {
+                    ki = new KEYBDINPUT
                     {
-                        try
+                        wVk = (ushort)key,
+                        wScan = 0,
+                        dwFlags = flags,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            };
+        }
+
+        /// <summary>
+        /// Sends TAB using keybd_event with its scan code (required by the game).
+        /// </summary>
+        public static void SendTab(IntPtr windowHandle)
+        {
+            try
+            {
+                keybd_event((byte)Keys.Tab, 0x0F, 0, 0);
+                Thread.Sleep(5);
+                keybd_event((byte)Keys.Tab, 0x0F, KEYUP, 0);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error sending TAB key to window {windowHandle}: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Sends ENTER using keybd_event with its scan code (required by the game).
+        /// </summary>
+        public static void SendEnter(IntPtr windowHandle)
+        {
+            try
+            {
+                keybd_event((byte)Keys.Enter, 0x1C, 0, 0);
+                Thread.Sleep(5);
+                keybd_event((byte)Keys.Enter, 0x1C, KEYUP, 0);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error sending ENTER key to window {windowHandle}: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Types a string into the (foreground) target window character by character.
+        /// </summary>
+        private static void TypeTextToWindow(IntPtr windowHandle, string text)
+        {
+            foreach (char c in text)
+            {
+                Keys key;
+                bool needsShift = false;
+
+                switch (c)
+                {
+                    case '/':
+                        key = Keys.OemQuestion;
+                        needsShift = true;
+                        break;
+                    case ' ':
+                        key = Keys.Space;
+                        break;
+                    default:
+                        var keyCode = VkKeyScan(c);
+                        if (keyCode == -1)
                         {
-                            _ocrEngine = new TesseractEngine(TessdataPath, OcrLanguage, EngineMode.Default);
+                            Trace.WriteLine($"Warning: Could not convert character '{c}' to key code");
+                            continue;
                         }
-                        catch (Exception ex)
-                        {
-                            Trace.WriteLine($"Failed to initialize OCR engine: {ex.Message}");
-                        }
-                    }
+                        key = (Keys)(keyCode & 0xFF);
+                        needsShift = (keyCode & 0x100) != 0;
+                        break;
                 }
-            }
-        }
 
-        /// <summary>
-        /// Advanced preprocessing for OCR - exact legacy implementation
-        /// </summary>
-        private static Bitmap PreprocessForOCR(Bitmap src)
-        {
-            int scale = 4;
-            Bitmap upscaled = new Bitmap(src.Width * scale, src.Height * scale);
-            using (Graphics g = Graphics.FromImage(upscaled))
-            {
-                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                g.DrawImage(src, new Rectangle(0, 0, upscaled.Width, upscaled.Height));
-            }
-
-            BitmapData data = upscaled.LockBits(new Rectangle(0, 0, upscaled.Width, upscaled.Height), 
-                ImageLockMode.ReadWrite, PixelFormat.Format24bppRgb);
-            int stride = data.Stride;
-            IntPtr scan0 = data.Scan0;
-            int bytes = stride * upscaled.Height;
-            byte[] pixelBuffer = new byte[bytes];
-            System.Runtime.InteropServices.Marshal.Copy(scan0, pixelBuffer, 0, bytes);
-
-            int minGray = 255, maxGray = 0;
-            
-            for (int y = 0; y < upscaled.Height; y++)
-            {
-                int row = y * stride;
-                for (int x = 0; x < upscaled.Width; x++)
+                if (needsShift)
                 {
-                    int idx = row + x * 3;
-                    if (idx + 2 >= pixelBuffer.Length) continue;
-                    
-                    int b = pixelBuffer[idx];
-                    int g = pixelBuffer[idx + 1];
-                    int r = pixelBuffer[idx + 2];
-                    int gray = (int)(0.299 * r + 0.587 * g + 0.114 * b);
-                    
-                    if (gray < minGray) minGray = gray;
-                    if (gray > maxGray) maxGray = gray;
+                    SimulateKeyPressListToWindow(windowHandle, new List<Keys> { Keys.LShiftKey, key }, 0);
                 }
-            }
-
-            int grayRange = maxGray - minGray;
-            int threshold;
-            
-            if (grayRange < 20)
-            {
-                threshold = (minGray + maxGray) / 2;
-            }
-            else
-            {
-                threshold = minGray + (int)(grayRange * 0.4);
-            }
-
-            for (int y = 0; y < upscaled.Height; y++)
-            {
-                int row = y * stride;
-                for (int x = 0; x < upscaled.Width; x++)
+                else
                 {
-                    int idx = row + x * 3;
-                    if (idx + 2 >= pixelBuffer.Length) continue;
-                    
-                    int b = pixelBuffer[idx];
-                    int g = pixelBuffer[idx + 1];
-                    int r = pixelBuffer[idx + 2];
-                    int gray = (int)(0.299 * r + 0.587 * g + 0.114 * b);
-                    
-                    byte finalValue;
-                    if (gray > threshold)
-                    {
-                        finalValue = 255;
-                    }
-                    else
-                    {
-                        finalValue = 0;
-                    }
-                    
-                    pixelBuffer[idx] = finalValue;     // B
-                    pixelBuffer[idx + 1] = finalValue; // G
-                    pixelBuffer[idx + 2] = finalValue; // R
+                    SimulateKeyPress(windowHandle, key);
                 }
             }
-
-            System.Runtime.InteropServices.Marshal.Copy(pixelBuffer, 0, scan0, bytes);
-            upscaled.UnlockBits(data);
-
-            return upscaled;
         }
 
-        /// <summary>
-        /// Converts Position to Rectangle
-        /// </summary>
-        private static Rectangle GetRectangleFromPosition(Position position)
+        public static void GroupCharacters()
         {
-            return new Rectangle(position.X, position.Y, position.Width, position.Height);
-        }
-
-        /// <summary>
-        /// Captures a specific area of a window - exact legacy implementation
-        /// </summary>
-        private static Bitmap CaptureWindowArea(IntPtr windowHandle, Rectangle screenRectangle)
-        {
-            Screen windowScreen = Screen.FromHandle(windowHandle);
-
-            Rectangle adjustedRectangle = new Rectangle(
-                screenRectangle.Left + windowScreen.WorkingArea.Left,
-                screenRectangle.Top + windowScreen.WorkingArea.Top,
-                screenRectangle.Width,
-                screenRectangle.Height);
-
-            Bitmap capturedBitmap = new Bitmap(adjustedRectangle.Width, adjustedRectangle.Height);
-
-            using (Graphics graphics = Graphics.FromImage(capturedBitmap))
+            try
             {
-                graphics.CopyFromScreen(adjustedRectangle.Left, adjustedRectangle.Top, 0, 0, 
-                    new Size(adjustedRectangle.Width, adjustedRectangle.Height));
-            }
+                var handles = WindowHandles;
+                var selectedPanel = PanelManagementService.SelectedPanel;
+                if (selectedPanel == null)
+                {
+                    Trace.WriteLine("No panel selected for group characters");
+                    return;
+                }
 
-            return capturedBitmap;
+                var selectedWindow = handles.FirstOrDefault(w => w.Value.RelatedPanel == selectedPanel);
+                if (selectedWindow.Key == IntPtr.Zero)
+                {
+                    Trace.WriteLine("No window found for selected panel");
+                    return;
+                }
+
+                Trace.WriteLine($"Sending group invitations from SELECTED panel: {selectedWindow.Value.CharacterName}");
+
+                var otherWindows = handles.Where(w => w.Key != selectedWindow.Key).ToList();
+
+                var discussionKeybind = ConfigurationService.Current.Keybinds[TRIGGERS.DOFUS_OPEN_DISCUSSION];
+                SimulateKeyCombination(selectedWindow.Key, discussionKeybind);
+                Thread.Sleep(100);
+
+                foreach (var windowEntry in otherWindows)
+                {
+                    var characterName = windowEntry.Value.CharacterName;
+                    if (string.IsNullOrEmpty(characterName))
+                    {
+                        Trace.WriteLine("Character name is empty, cannot send group characters command");
+                        continue;
+                    }
+
+                    Trace.WriteLine($"Sending group characters invitation for character: {characterName}");
+
+                    SetHandleToForeground(selectedWindow.Key);
+                    WaitForForeground(selectedWindow.Key, 250);
+                    Thread.Sleep(50);
+
+                    TypeTextToWindow(selectedWindow.Key, $"/invite {characterName}");
+                    SendEnter(selectedWindow.Key);
+
+                    Trace.WriteLine($"Group characters invitation sent for: {characterName}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error in GroupCharacters: {ex.Message}");
+            }
+        }
+        #endregion
+
+        #region Private Methods
+        /// <summary>
+        /// Gets the title of the specified window
+        /// </summary>
+        private static string GetWindowTitle(IntPtr hWnd)
+        {
+            try
+            {
+                var length = GetWindowTextLength(hWnd);
+                if (length == 0) return string.Empty;
+
+                var builder = new StringBuilder(length + 1);
+                GetWindowText(hWnd, builder, builder.Capacity);
+                return builder.ToString();
+            }
+            catch
+            {
+                return string.Empty;
+            }
         }
 
         /// <summary>
-        /// Reorders the window list to start from the next window after the selected one
+        /// Gets a random delay based on configuration.
         /// </summary>
-        /// <param name="selectedPanel">The currently selected panel</param>
-        /// <param name="windowList">The list of windows to reorder</param>
-        /// <returns>Reordered list starting from the window after the selected one</returns>
+        private static int GetRandomDelay()
+        {
+            var config = ConfigurationService.Current.General;
+            var minDelay = Math.Max(5, config.MinimumFollowDelay);
+            var maxDelay = Math.Max(minDelay + 5, config.MaximumFollowDelay);
+            lock (Random)
+            {
+                return Random.Next(minDelay, maxDelay);
+            }
+        }
+
+        /// <summary>
+        /// Reorders the window list to start from the next window after the
+        /// selected one, ending on the selected window itself (so a foreground
+        /// broadcast finishes with focus back on the user's active client).
+        /// </summary>
         private static List<KeyValuePair<IntPtr, WindowInfo>> GetReorderedWindowList(object selectedPanel)
         {
             try
             {
-                // Find the selected window in the window list
                 var windowList = WindowHandles.ToList();
                 var selectedWindowEntry = windowList.FirstOrDefault(w => w.Value.RelatedPanel == selectedPanel);
 
-                // If we found the selected window, reorder the list to start from the next window after the selected one
                 if (selectedWindowEntry.Key != IntPtr.Zero)
                 {
                     var selectedIndex = windowList.FindIndex(kvp => kvp.Key == selectedWindowEntry.Key);
                     if (selectedIndex >= 0 && selectedIndex < windowList.Count - 1)
                     {
-                        // Reorder: from (selectedIndex + 1) to end, then from start to selectedIndex
                         return windowList
                             .Skip(selectedIndex + 1)
                             .Concat(windowList.Take(selectedIndex + 1))
@@ -1366,84 +1107,76 @@ namespace MultiClicker.Services
                 return WindowHandles.ToList();
             }
         }
+        #endregion
+
+        #region OCR (Fill HDV)
+        private static readonly int[] AllowedSellModes = { 1, 10, 100, 1000 };
 
         /// <summary>
-        /// Creates an lParam value from x and y coordinates
+        /// Reads the HDV sell panel via OCR and types the undercut price.
+        /// Flow: read the current sell quantity (constrained to 1/10/100/1000),
+        /// then read only the matching lot price, then fill price-1.
+        /// Aborts loudly rather than typing a number it isn't sure about.
         /// </summary>
-        /// <param name="x">X coordinate</param>
-        /// <param name="y">Y coordinate</param>
-        /// <returns>lParam value</returns>
-        private static IntPtr MakeLParam(int x, int y)
+        public static void FillSellPriceBasedOnForeGroundWindow()
         {
-            return (IntPtr)((y << 16) | (x & 0xFFFF));
-        }
-
-        [DllImport("user32.dll")]
-        private static extern short VkKeyScan(char ch);
-
-        /// <summary>
-        /// Alternative method to send key combination using SendMessage directly
-        /// </summary>
-        /// <param name="windowHandle">Target window handle</param>
-        /// <param name="keyCombination">Key combination to send</param>
-        public static void SendKeyComboDirectly(IntPtr windowHandle, KeyCombination keyCombination)
-        {
-            const uint WM_KEYDOWN = 0x0100;
-            const uint WM_KEYUP = 0x0101;
-            
+            Trace.WriteLine("Starting price analysis");
             try
             {
-                Trace.WriteLine($"Sending key combination directly via SendMessage: {keyCombination}");
-                
-                // Send modifier keys down
-                if (keyCombination.Control)
+                var positions = ConfigurationService.Current.Positions;
+
+                var modeRect = GetRectangleFromPosition(positions[TRIGGERS_POSITIONS.SELL_CURRENT_MODE]);
+                int mode = OCRService.RecognizeNumberOnScreen(modeRect, AllowedSellModes);
+                if (mode < 0)
                 {
-                    SendMessage(windowHandle, WM_KEYDOWN, (IntPtr)Keys.ControlKey, IntPtr.Zero);
-                    Thread.Sleep(10);
+                    Trace.WriteLine("FILL_HDV aborted: could not read the current sell quantity (1/10/100/1000).");
+                    return;
                 }
-                if (keyCombination.Shift)
+
+                TRIGGERS_POSITIONS lotPosition;
+                switch (mode)
                 {
-                    SendMessage(windowHandle, WM_KEYDOWN, (IntPtr)Keys.ShiftKey, IntPtr.Zero);
-                    Thread.Sleep(10);
+                    case 1: lotPosition = TRIGGERS_POSITIONS.SELL_LOT_1; break;
+                    case 10: lotPosition = TRIGGERS_POSITIONS.SELL_LOT_10; break;
+                    case 100: lotPosition = TRIGGERS_POSITIONS.SELL_LOT_100; break;
+                    default: lotPosition = TRIGGERS_POSITIONS.SELL_LOT_1000; break;
                 }
-                if (keyCombination.Alt)
+
+                var lotRect = GetRectangleFromPosition(positions[lotPosition]);
+                int price = OCRService.RecognizeNumberOnScreen(lotRect);
+                if (price < 0)
                 {
-                    SendMessage(windowHandle, WM_KEYDOWN, (IntPtr)Keys.Menu, IntPtr.Zero);
-                    Thread.Sleep(10);
+                    Trace.WriteLine($"FILL_HDV aborted: could not read the lot-of-{mode} price.");
+                    return;
                 }
-                
-                // Send main key down and up
-                if (keyCombination.Key != Keys.None)
+                if (price <= 1)
                 {
-                    SendMessage(windowHandle, WM_KEYDOWN, (IntPtr)keyCombination.Key, IntPtr.Zero);
-                    Thread.Sleep(50);
-                    SendMessage(windowHandle, WM_KEYUP, (IntPtr)keyCombination.Key, IntPtr.Zero);
-                    Thread.Sleep(10);
+                    Trace.WriteLine($"FILL_HDV aborted: recognized price {price} cannot be undercut.");
+                    return;
                 }
-                
-                // Send modifier keys up (in reverse order)
-                if (keyCombination.Alt)
-                {
-                    SendMessage(windowHandle, WM_KEYUP, (IntPtr)Keys.Menu, IntPtr.Zero);
-                    Thread.Sleep(10);
-                }
-                if (keyCombination.Shift)
-                {
-                    SendMessage(windowHandle, WM_KEYUP, (IntPtr)Keys.ShiftKey, IntPtr.Zero);
-                    Thread.Sleep(10);
-                }
-                if (keyCombination.Control)
-                {
-                    SendMessage(windowHandle, WM_KEYUP, (IntPtr)Keys.ControlKey, IntPtr.Zero);
-                    Thread.Sleep(10);
-                }
-                
-                Trace.WriteLine("Direct SendMessage key combination completed");
+
+                int amountToFill = price - 1;
+                Trace.WriteLine($"FILL_HDV: sell quantity x{mode}, market price {price}, filling {amountToFill}");
+
+                Thread.Sleep(100);
+                SendKeys.SendWait("^a");
+                Thread.Sleep(200);
+                SendKeys.SendWait("{DELETE}");
+                SendKeys.SendWait(amountToFill.ToString());
             }
             catch (Exception ex)
             {
-                Trace.WriteLine($"Error in SendKeyComboDirectly: {ex.Message}");
+                Trace.WriteLine($"HDV OCR processing failed: {ex.Message}, Trace : {ex.StackTrace}");
             }
+            Trace.WriteLine("-------------------------");
+        }
+
+        /// <summary>
+        /// Converts Position to Rectangle (positions are absolute screen coordinates).
+        /// </summary>
+        private static Rectangle GetRectangleFromPosition(Position position)
+        {
+            return new Rectangle(position.X, position.Y, position.Width, position.Height);
         }
         #endregion
     }

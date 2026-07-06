@@ -48,25 +48,51 @@ namespace MultiClicker.Services
 
         #region Public Methods
         /// <summary>
-        /// Selects the next panel in the sequence - exact legacy behavior
+        /// Marshals the given action to the UI thread if needed. WinForms controls
+        /// must never be touched from the trigger dispatcher thread. Returns true
+        /// when the action was re-dispatched (i.e. the caller should stop).
+        /// </summary>
+        private static bool RedispatchToUiThread(Action action)
+        {
+            try
+            {
+                var flow = _flowLayoutPanel;
+                if (flow == null || flow.IsDisposed || !flow.IsHandleCreated)
+                    return false;
+                if (flow.InvokeRequired)
+                {
+                    flow.BeginInvoke(action);
+                    return true;
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Error dispatching panel action to UI thread: {ex.Message}");
+                return true; // never run control code on the wrong thread
+            }
+        }
+
+        /// <summary>
+        /// Selects the next panel in the sequence.
         /// </summary>
         public static void SelectNextPanel()
         {
+            if (RedispatchToUiThread(SelectNextPanel)) return;
             try
             {
                 if (_flowLayoutPanel?.Controls == null || _flowLayoutPanel.Controls.Count == 0)
                     return;
 
                 var index = _flowLayoutPanel.Controls.IndexOf(_selectedPanel);
-                
-                // Legacy behavior: if index is -1 (no selection) or at the end, go to first panel
+
+                // If index is -1 (no selection) or at the end, go to first panel
                 if (index == -1 || index == _flowLayoutPanel.Controls.Count - 1)
                 {
                     HandlePanelClick(_flowLayoutPanel.Controls[0], EventArgs.Empty);
                 }
                 else
                 {
-                    // Go to next panel
                     HandlePanelClick(_flowLayoutPanel.Controls[index + 1], EventArgs.Empty);
                 }
             }
@@ -77,25 +103,25 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
-        /// Selects the previous panel in the sequence - exact legacy behavior
+        /// Selects the previous panel in the sequence.
         /// </summary>
         public static void SelectPreviousPanel()
         {
+            if (RedispatchToUiThread(SelectPreviousPanel)) return;
             try
             {
                 if (_flowLayoutPanel?.Controls == null || _flowLayoutPanel.Controls.Count == 0)
                     return;
 
                 var index = _flowLayoutPanel.Controls.IndexOf(_selectedPanel);
-                
-                // Legacy behavior: if index is -1 (no selection) or at the beginning, go to last panel
+
+                // If index is -1 (no selection) or at the beginning, go to last panel
                 if (index == -1 || index == 0)
                 {
                     HandlePanelClick(_flowLayoutPanel.Controls[_flowLayoutPanel.Controls.Count - 1], EventArgs.Empty);
                 }
                 else
                 {
-                    // Go to previous panel
                     HandlePanelClick(_flowLayoutPanel.Controls[index - 1], EventArgs.Empty);
                 }
             }
@@ -138,17 +164,14 @@ namespace MultiClicker.Services
         /// <param name="e">Event arguments</param>
         public static void HandlePanelClick(object sender, EventArgs e)
         {
+            var panel = sender as Control;
+            if (panel == null) return;
+            if (RedispatchToUiThread(() => HandlePanelClick(panel, e))) return;
             try
             {
-                var panel = sender as Control;
-                if (panel?.Tag is IntPtr handle)
+                if (panel.Tag is IntPtr)
                 {
-                    SelectPanel(panel);
-
-                    if (handle == GetForegroundWindow())
-                        return;
-
-                    WindowManagementService.SetHandleToForeground(handle);
+                    SelectPanel(panel, focusWindow: true);
                 }
             }
             catch (Exception ex)
@@ -161,8 +184,10 @@ namespace MultiClicker.Services
         /// Selects a panel by its name
         /// </summary>
         /// <param name="panelName">The name of the panel to select</param>
-        public static void SelectPanelByName(string panelName)
+        /// <param name="focusWindow">Whether to bring the associated game window to the foreground</param>
+        public static void SelectPanelByName(string panelName, bool focusWindow = true)
         {
+            if (RedispatchToUiThread(() => SelectPanelByName(panelName, focusWindow))) return;
             try
             {
                 if (_flowLayoutPanel?.Controls == null)
@@ -172,19 +197,27 @@ namespace MultiClicker.Services
                     .Cast<Control>()
                     .FirstOrDefault(p => p.Name == panelName);
 
-                if (panel?.Tag is IntPtr handle)
+                if (panel?.Tag is IntPtr)
                 {
-                    if (handle == GetForegroundWindow())
-                        return;
-
-                    SelectPanel(panel);
-                    WindowManagementService.SetHandleToForeground(handle);
+                    SelectPanel(panel, focusWindow);
                 }
             }
             catch (Exception ex)
             {
                 Trace.WriteLine($"Error selecting panel by name: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Selects a panel visually without touching the foreground window.
+        /// Used when panels are rebuilt (auto-refresh) so the app never steals
+        /// focus from the game on its own initiative.
+        /// </summary>
+        public static void SelectPanelVisualOnly(Control panel)
+        {
+            if (panel == null) return;
+            if (RedispatchToUiThread(() => SelectPanelVisualOnly(panel))) return;
+            SelectPanel(panel, focusWindow: false);
         }
 
         /// <summary>
@@ -245,10 +278,10 @@ namespace MultiClicker.Services
 
         #region Private Methods
         /// <summary>
-        /// Selects the specified panel and updates the UI - exact legacy behavior
+        /// Selects the specified panel and updates the UI, optionally bringing
+        /// the associated game window to the foreground.
         /// </summary>
-        /// <param name="panel">The panel to select</param>
-        private static void SelectPanel(Control panel)
+        private static void SelectPanel(Control panel, bool focusWindow)
         {
             try
             {
@@ -257,21 +290,22 @@ namespace MultiClicker.Services
 
                 var handle = (IntPtr)extendedPanel.Tag;
 
-                // Deselect the previously selected panel (legacy behavior)
-                if (_selectedPanel != null)
+                // Deselect the previously selected panel
+                if (_selectedPanel != null && !_selectedPanel.IsDisposed)
                 {
                     UpdatePanelSelection(_selectedPanel, false);
                 }
 
-                // Select the new panel (legacy behavior)
+                // Select the new panel
                 UpdatePanelSelection(extendedPanel, true);
                 _selectedPanel = extendedPanel;
 
-                // Check if the window is already in foreground AFTER selecting the panel (legacy behavior)
-                if (handle == GetForegroundWindow()) 
+                if (!focusWindow)
                     return;
 
-                // Set the corresponding window to foreground (legacy behavior)
+                if (handle == GetForegroundWindow())
+                    return;
+
                 WindowManagementService.SetHandleToForeground(handle);
             }
             catch (Exception ex)

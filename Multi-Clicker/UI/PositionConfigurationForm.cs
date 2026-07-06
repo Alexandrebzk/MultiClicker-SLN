@@ -25,6 +25,11 @@ namespace MultiClicker
             base.OnFormClosed(e);
             OnUpdateCompleted -= UpdateManager_OnUpdateCompleted;
 
+            // A dangling picking state would suppress every trigger until app
+            // restart (the hook skips trigger evaluation while it's set).
+            ConfigurationService.IsModifyingKeyBinds = false;
+            firstClick = null;
+
             if (overlayForm != null)
             {
                 overlayForm.Close();
@@ -143,21 +148,26 @@ namespace MultiClicker
             });
         }
         
-        public static void choosePosition()
+        /// <summary>
+        /// Records one corner of the position rectangle. Called (off the hook
+        /// thread) with the exact screen point of the right-click; the second
+        /// call completes the rectangle and persists it.
+        /// </summary>
+        public static void choosePosition(POINT clickPoint)
         {
             if (firstClick == null)
             {
-                firstClick = HookManagementService.CursorPosition;
+                firstClick = clickPoint;
             }
             else
             {
-                Trace.WriteLine($"First click: {firstClick.Value}, Second click: {HookManagementService.CursorPosition}");
+                Trace.WriteLine($"First click: {firstClick.Value.X},{firstClick.Value.Y}; second click: {clickPoint.X},{clickPoint.Y}");
                 Position newPosition = new Position
                 {
-                    X = Math.Min(firstClick.Value.X, HookManagementService.CursorPosition.X),
-                    Y = Math.Min(firstClick.Value.Y, HookManagementService.CursorPosition.Y),
-                    Width = Math.Abs(firstClick.Value.X - HookManagementService.CursorPosition.X),
-                    Height = Math.Abs(firstClick.Value.Y - HookManagementService.CursorPosition.Y)
+                    X = Math.Min(firstClick.Value.X, clickPoint.X),
+                    Y = Math.Min(firstClick.Value.Y, clickPoint.Y),
+                    Width = Math.Abs(firstClick.Value.X - clickPoint.X),
+                    Height = Math.Abs(firstClick.Value.Y - clickPoint.Y)
                 };
                 ConfigurationService.Current.Positions[currentTrigger] = newPosition;
                 ConfigurationService.SaveConfig();

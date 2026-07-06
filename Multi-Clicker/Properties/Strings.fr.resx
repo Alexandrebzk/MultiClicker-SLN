@@ -309,6 +309,12 @@
   <data name="PreferBackgroundClicks" xml:space="preserve">
     <value>Préférer clics en arrière-plan</value>
   </data>
+  <data name="RefreshWindows" xml:space="preserve">
+    <value>Actualiser les fenêtres de jeu</value>
+  </data>
+  <data name="DuplicateKeybindsWarning" xml:space="preserve">
+    <value>Plusieurs actions partagent le même raccourci et se déclencheraient toutes en même temps. Enregistrer quand même ?</value>
+  </data>
   <data name="CharacterSelectionTitle" xml:space="preserve">
     <value>Sélection des personnages</value>
   </data>

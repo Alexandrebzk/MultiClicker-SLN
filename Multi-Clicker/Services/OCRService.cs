@@ -1,9 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 using Tesseract;
@@ -11,7 +14,21 @@ using Tesseract;
 namespace MultiClicker.Services
 {
     /// <summary>
-    /// Service responsible for Optical Character Recognition operations
+    /// Service responsible for Optical Character Recognition operations.
+    ///
+    /// Number recognition strategy ("never trust a single pass"):
+    ///  * The captured area is upscaled 4x, then run through several
+    ///    preprocessing variants (raw grayscale, Otsu binarization, inverted
+    ///    Otsu, legacy fixed-ratio threshold) and two Tesseract segmentation
+    ///    modes. Game text can be light-on-dark or dark-on-light depending on
+    ///    the UI panel, so both polarities are always attempted.
+    ///  * Every pass is sanitized down to digits only (thousand separators,
+    ///    currency suffixes and stray glyphs are discarded) and validated
+    ///    against an optional whitelist of allowed values.
+    ///  * A high-confidence early hit returns immediately; otherwise the
+    ///    candidates vote and a value is accepted only when at least two
+    ///    variants agree or one variant is reasonably confident. When nothing
+    ///    trustworthy is found the caller gets -1 - never a garbage number.
     /// </summary>
     public static class OCRService
     {
@@ -19,7 +36,15 @@ namespace MultiClicker.Services
         private static readonly object EngineLock = new object();
         private static TesseractEngine _engine;
         private static readonly string OcrLanguage = "fra";
-        private static readonly int BinarizationThreshold = 140;
+
+        // Digits plus the separators Dofus uses in prices; everything else is
+        // rejected at the Tesseract level so separator glyphs are never forced
+        // into a bogus digit.
+        private const string NumberWhitelist = "0123456789 .,";
+
+        private const float EarlyExitConfidence = 0.85f;
+        private const float MinimumSingleConfidence = 0.45f;
+        private const int MaxDigits = 9;
 
         private static string ResolveTessdataPath()
         {
@@ -83,213 +108,161 @@ namespace MultiClicker.Services
         }
 
         /// <summary>
-        /// Performs OCR on the specified image
+        /// Recognizes a number displayed in the given absolute screen rectangle.
+        /// Captures the screen up to two times (transient overlays/tooltips can
+        /// ruin a single frame) and runs the multi-variant pipeline on each.
         /// </summary>
-        /// <param name="image">The image to process</param>
-        /// <returns>The recognized text</returns>
-        public static string RecognizeText(Image image)
+        /// <param name="screenRect">Absolute screen rectangle to read.</param>
+        /// <param name="allowedValues">Optional whitelist; any value outside it is rejected.</param>
+        /// <returns>The recognized number, or -1 when no trustworthy value was found.</returns>
+        public static int RecognizeNumberOnScreen(Rectangle screenRect, int[] allowedValues = null)
         {
-            if (!IsInitialized)
+            if (screenRect.Width < 3 || screenRect.Height < 3)
             {
-                InitializeEngine();
+                Trace.WriteLine($"OCR skipped: capture rectangle {screenRect} is not configured.");
+                return -1;
             }
 
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                try
+                {
+                    using (var capture = CaptureScreenArea(screenRect))
+                    {
+                        var value = RecognizeNumberFromBitmap(capture, allowedValues);
+                        if (value >= 0) return value;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"OCR capture attempt {attempt + 1} failed: {ex.Message}");
+                }
+
+                Thread.Sleep(120);
+            }
+
+            return -1;
+        }
+
+        /// <summary>
+        /// Runs the multi-variant recognition pipeline on an already-captured
+        /// image. Internal so it can be exercised directly by test harnesses.
+        /// </summary>
+        internal static int RecognizeNumberFromBitmap(Bitmap source, int[] allowedValues = null)
+        {
+            if (!IsInitialized) InitializeEngine();
             if (!IsInitialized)
             {
                 Trace.WriteLine("OCR engine not available");
-                return string.Empty;
+                return -1;
             }
 
             lock (EngineLock)
             {
                 try
                 {
-                    using (var processedImage = PreprocessImage(image))
-                    using (var page = _engine.Process(processedImage))
+                    _engine.SetVariable("tessedit_char_whitelist", NumberWhitelist);
+
+                    using (var upscaled = UpscaleForOcr(source, 4))
                     {
-                        var result = page.GetText();
-                        return result?.Trim() ?? string.Empty;
+                        var gray = ToGrayBuffer(upscaled, out int width, out int height);
+                        int otsu = OtsuThreshold(gray);
+                        int legacy = LegacyThreshold(gray);
+
+                        // Ordered from usually-best to fallback. Tesseract does its
+                        // own internal thresholding, so plain grayscale often wins;
+                        // explicit binarizations rescue low-contrast cases.
+                        var variants = new (string name, Func<byte, byte> map)[]
+                        {
+                            ("gray", g => g),
+                            ("otsu", g => g > otsu ? (byte)255 : (byte)0),
+                            ("otsu-inverted", g => g > otsu ? (byte)0 : (byte)255),
+                            ("legacy-threshold", g => g > legacy ? (byte)255 : (byte)0),
+                        };
+                        var segModes = new[] { PageSegMode.SingleLine, PageSegMode.SingleWord };
+
+                        var candidates = new List<(int value, float confidence, string variant)>();
+
+                        foreach (var mode in segModes)
+                        {
+                            foreach (var (name, map) in variants)
+                            {
+                                var candidate = RunNumberOcr(gray, width, height, map, mode, $"{name}/{mode}");
+                                if (candidate == null) continue;
+
+                                var (value, confidence) = candidate.Value;
+                                if (allowedValues != null && !allowedValues.Contains(value)) continue;
+                                if (value <= 0) continue;
+
+                                candidates.Add((value, confidence, name));
+                                if (confidence >= EarlyExitConfidence)
+                                {
+                                    Trace.WriteLine($"OCR accepted {value} ({name}/{mode}, confidence {confidence:F2})");
+                                    return value;
+                                }
+                            }
+                        }
+
+                        if (candidates.Count == 0)
+                        {
+                            Trace.WriteLine("OCR found no plausible number in any variant.");
+                            return -1;
+                        }
+
+                        // Consensus: the value seen by the most variants wins; a
+                        // lone candidate must be reasonably confident.
+                        var best = candidates
+                            .GroupBy(c => c.value)
+                            .Select(g => new { Value = g.Key, Count = g.Count(), Confidence = g.Max(c => c.confidence) })
+                            .OrderByDescending(x => x.Count)
+                            .ThenByDescending(x => x.Confidence)
+                            .First();
+
+                        if (best.Count >= 2 || best.Confidence >= MinimumSingleConfidence)
+                        {
+                            Trace.WriteLine($"OCR consensus {best.Value} ({best.Count} variants, max confidence {best.Confidence:F2})");
+                            return best.Value;
+                        }
+
+                        Trace.WriteLine($"OCR rejected lone low-confidence candidate {best.Value} (confidence {best.Confidence:F2}).");
+                        return -1;
                     }
                 }
                 catch (Exception ex)
                 {
-                    Trace.WriteLine($"OCR processing failed: {ex.Message}");
-                    return string.Empty;
+                    Trace.WriteLine($"OCR number recognition failed: {ex.Message}");
+                    return -1;
                 }
-            }
-        }
-
-        /// <summary>
-        /// Performs OCR on a specific region of the image
-        /// </summary>
-        /// <param name="image">The source image</param>
-        /// <param name="region">The region to process</param>
-        /// <returns>The recognized text</returns>
-        public static string RecognizeTextInRegion(Image image, Rectangle region)
-        {
-            try
-            {
-                using (var croppedImage = CropImage(image, region))
+                finally
                 {
-                    return RecognizeText(croppedImage);
-                }
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"Failed to process region: {ex.Message}");
-                return string.Empty;
-            }
-        }
-
-        /// <summary>
-        /// Performs HDV (Hotel de Vente) OCR processing with automatic amount filling
-        /// </summary>
-        /// <param name="AmountToFill">The amount to fill in the interface</param>
-        public static void ProcessHDVOCR(int AmountToFill)
-        {
-            Trace.WriteLine("-------------------------");
-            Trace.WriteLine("Starting HDV OCR processing...");
-            try
-            {
-                // Take screenshot and process OCR
-                using (var screenshot = CaptureScreen())
-                using (var processedImage = PreprocessForOCR(screenshot))
-                {
-                    var recognizedText = RecognizeText(processedImage);
-                    Trace.WriteLine($"OCR Result: {recognizedText}");
-                    
-                    // Simulate UI interaction for amount filling
-                    Thread.Sleep(50);
-                    SendKeys.SendWait("{DELETE}");
-                    SendKeys.SendWait((AmountToFill - 1).ToString().Trim());
-                }
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"HDV OCR processing failed: {ex.Message}, Trace: {ex.StackTrace}");
-            }
-            Trace.WriteLine("-------------------------");
-        }
-
-        /// <summary>
-        /// Captures the current screen
-        /// </summary>
-        /// <returns>Screenshot bitmap</returns>
-        public static Bitmap CaptureScreen()
-        {
-            var bounds = Screen.PrimaryScreen.Bounds;
-            var bitmap = new Bitmap(bounds.Width, bounds.Height);
-            using (var graphics = Graphics.FromImage(bitmap))
-            {
-                graphics.CopyFromScreen(bounds.X, bounds.Y, 0, 0, bounds.Size);
-            }
-            return bitmap;
-        }
-
-        /// <summary>
-        /// Advanced preprocessing for OCR with upscaling, contrast enhancement, and binarization
-        /// </summary>
-        /// <param name="src">Source bitmap</param>
-        /// <returns>Processed bitmap optimized for OCR</returns>
-        public static Bitmap PreprocessForOCR(Bitmap src)
-        {
-            // Upscale ×2
-            Bitmap upscaled = new Bitmap(src.Width * 2, src.Height * 2);
-            using (Graphics g = Graphics.FromImage(upscaled))
-            {
-                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                g.DrawImage(src, new Rectangle(0, 0, upscaled.Width, upscaled.Height));
-            }
-
-            // Enhance contrast
-            float contrast = 1.5f; // Contrast factor
-            float t = (1.0f - contrast) / 2.0f;
-
-            ColorMatrix colorMatrix = new ColorMatrix(new float[][]
-            {
-                new float[] {contrast, 0, 0, 0, 0},
-                new float[] {0, contrast, 0, 0, 0},
-                new float[] {0, 0, contrast, 0, 0},
-                new float[] {0, 0, 0, 1, 0},
-                new float[] {t, t, t, 0, 1}
-            });
-
-            using (ImageAttributes imageAttributes = new ImageAttributes())
-            {
-                imageAttributes.SetColorMatrix(colorMatrix);
-                
-                Bitmap contrastEnhanced = new Bitmap(upscaled.Width, upscaled.Height);
-                using (Graphics g = Graphics.FromImage(contrastEnhanced))
-                {
-                    g.DrawImage(upscaled, new Rectangle(0, 0, upscaled.Width, upscaled.Height),
-                        0, 0, upscaled.Width, upscaled.Height, GraphicsUnit.Pixel, imageAttributes);
-                }
-                
-                upscaled.Dispose();
-                
-                // Apply binarization
-                BinarizeImage(contrastEnhanced);
-                
-                return contrastEnhanced;
-            }
-        }
-        #endregion
-
-        #region Private Methods
-        /// <summary>
-        /// Preprocesses the image for better OCR results
-        /// </summary>
-        /// <param name="source">The source image</param>
-        /// <returns>The preprocessed image</returns>
-        private static Bitmap PreprocessImage(Image source)
-        {
-            var bitmap = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppArgb);
-            
-            using (var graphics = Graphics.FromImage(bitmap))
-            {
-                graphics.DrawImage(source, 0, 0);
-            }
-
-            // Apply binarization for better OCR results
-            BinarizeImage(bitmap);
-            
-            return bitmap;
-        }
-
-        /// <summary>
-        /// Applies binarization to the image
-        /// </summary>
-        /// <param name="bitmap">The bitmap to process</param>
-        private static void BinarizeImage(Bitmap bitmap)
-        {
-            for (int x = 0; x < bitmap.Width; x++)
-            {
-                for (int y = 0; y < bitmap.Height; y++)
-                {
-                    var pixel = bitmap.GetPixel(x, y);
-                    var grayValue = (int)(pixel.R * 0.299 + pixel.G * 0.587 + pixel.B * 0.114);
-                    var newColor = grayValue > BinarizationThreshold ? Color.White : Color.Black;
-                    bitmap.SetPixel(x, y, newColor);
+                    try { _engine.SetVariable("tessedit_char_whitelist", ""); } catch { }
                 }
             }
         }
 
         /// <summary>
-        /// Crops the image to the specified region
+        /// Reduces raw OCR output to a clean integer: keeps digits only (drops
+        /// thousand separators, currency suffixes, stray glyphs), trims leading
+        /// zeros, and rejects empty or absurdly long results.
+        /// Returns -1 when the text contains no usable number.
         /// </summary>
-        /// <param name="source">The source image</param>
-        /// <param name="region">The region to crop</param>
-        /// <returns>The cropped image</returns>
-        private static Bitmap CropImage(Image source, Rectangle region)
+        internal static int SanitizeRecognizedNumber(string rawText)
         {
-            var croppedBitmap = new Bitmap(region.Width, region.Height);
-            
-            using (var graphics = Graphics.FromImage(croppedBitmap))
+            if (string.IsNullOrEmpty(rawText)) return -1;
+
+            var digits = new System.Text.StringBuilder(rawText.Length);
+            foreach (var ch in rawText)
             {
-                graphics.DrawImage(source, new Rectangle(0, 0, region.Width, region.Height), region, GraphicsUnit.Pixel);
+                if (ch >= '0' && ch <= '9') digits.Append(ch);
             }
-            
-            return croppedBitmap;
+
+            if (digits.Length == 0) return -1;
+
+            var trimmed = digits.ToString().TrimStart('0');
+            if (trimmed.Length == 0) return 0;
+            if (trimmed.Length > MaxDigits) return -1;
+
+            return int.Parse(trimmed);
         }
 
         /// <summary>
@@ -302,6 +275,175 @@ namespace MultiClicker.Services
                 _engine?.Dispose();
                 _engine = null;
             }
+        }
+        #endregion
+
+        #region Private Methods
+        /// <summary>
+        /// Runs one OCR pass over the gray buffer transformed by the given map.
+        /// Returns the sanitized value with its confidence, or null.
+        /// </summary>
+        private static (int value, float confidence)? RunNumberOcr(
+            byte[] gray, int width, int height, Func<byte, byte> map, PageSegMode segMode, string label)
+        {
+            try
+            {
+                using (var bmp = BuildBitmapFromGray(gray, width, height, map))
+                using (var pix = PixConverter.ToPix(bmp))
+                using (var page = _engine.Process(pix, segMode))
+                {
+                    var raw = page.GetText();
+                    var confidence = page.GetMeanConfidence();
+                    var value = SanitizeRecognizedNumber(raw);
+
+                    Trace.WriteLine($"OCR [{label}] raw='{(raw ?? "").Trim()}' -> {value} (confidence {confidence:F2})");
+                    return value >= 0 ? (value, confidence) : ((int, float)?)null;
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"OCR variant {label} failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Captures an absolute screen rectangle. Positions are stored as raw
+        /// screen coordinates by the position picker, so no offset is applied.
+        /// </summary>
+        private static Bitmap CaptureScreenArea(Rectangle screenRectangle)
+        {
+            var bitmap = new Bitmap(screenRectangle.Width, screenRectangle.Height, PixelFormat.Format24bppRgb);
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.CopyFromScreen(screenRectangle.Left, screenRectangle.Top, 0, 0, bitmap.Size);
+            }
+            return bitmap;
+        }
+
+        private static Bitmap UpscaleForOcr(Bitmap src, int scale)
+        {
+            var upscaled = new Bitmap(Math.Max(1, src.Width * scale), Math.Max(1, src.Height * scale), PixelFormat.Format24bppRgb);
+            using (var g = Graphics.FromImage(upscaled))
+            {
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                g.DrawImage(src, new Rectangle(0, 0, upscaled.Width, upscaled.Height));
+            }
+            return upscaled;
+        }
+
+        private static byte[] ToGrayBuffer(Bitmap bmp, out int width, out int height)
+        {
+            width = bmp.Width;
+            height = bmp.Height;
+            var gray = new byte[width * height];
+
+            var data = bmp.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+            try
+            {
+                int stride = data.Stride;
+                var row = new byte[stride];
+                for (int y = 0; y < height; y++)
+                {
+                    Marshal.Copy(data.Scan0 + y * stride, row, 0, stride);
+                    for (int x = 0; x < width; x++)
+                    {
+                        int idx = x * 3;
+                        gray[y * width + x] = (byte)(0.299 * row[idx + 2] + 0.587 * row[idx + 1] + 0.114 * row[idx]);
+                    }
+                }
+            }
+            finally
+            {
+                bmp.UnlockBits(data);
+            }
+
+            return gray;
+        }
+
+        private static Bitmap BuildBitmapFromGray(byte[] gray, int width, int height, Func<byte, byte> map)
+        {
+            var bmp = new Bitmap(width, height, PixelFormat.Format24bppRgb);
+            var data = bmp.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
+            try
+            {
+                int stride = data.Stride;
+                var row = new byte[stride];
+                for (int y = 0; y < height; y++)
+                {
+                    for (int x = 0; x < width; x++)
+                    {
+                        var v = map(gray[y * width + x]);
+                        int idx = x * 3;
+                        row[idx] = v;
+                        row[idx + 1] = v;
+                        row[idx + 2] = v;
+                    }
+                    Marshal.Copy(row, 0, data.Scan0 + y * stride, stride);
+                }
+            }
+            finally
+            {
+                bmp.UnlockBits(data);
+            }
+            return bmp;
+        }
+
+        /// <summary>
+        /// Otsu's method: picks the threshold that maximizes between-class
+        /// variance - adapts to whatever contrast the game panel provides.
+        /// </summary>
+        private static int OtsuThreshold(byte[] gray)
+        {
+            var histogram = new int[256];
+            foreach (var g in gray) histogram[g]++;
+
+            long total = gray.Length;
+            long sumAll = 0;
+            for (int i = 0; i < 256; i++) sumAll += (long)i * histogram[i];
+
+            long sumBackground = 0;
+            long weightBackground = 0;
+            double maxVariance = -1;
+            int threshold = 127;
+
+            for (int t = 0; t < 256; t++)
+            {
+                weightBackground += histogram[t];
+                if (weightBackground == 0) continue;
+                long weightForeground = total - weightBackground;
+                if (weightForeground == 0) break;
+
+                sumBackground += (long)t * histogram[t];
+                double meanBackground = (double)sumBackground / weightBackground;
+                double meanForeground = (double)(sumAll - sumBackground) / weightForeground;
+                double variance = (double)weightBackground * weightForeground *
+                                  (meanBackground - meanForeground) * (meanBackground - meanForeground);
+
+                if (variance > maxVariance)
+                {
+                    maxVariance = variance;
+                    threshold = t;
+                }
+            }
+
+            return threshold;
+        }
+
+        /// <summary>
+        /// The historical fixed-ratio threshold, kept as one voting variant.
+        /// </summary>
+        private static int LegacyThreshold(byte[] gray)
+        {
+            int min = 255, max = 0;
+            foreach (var g in gray)
+            {
+                if (g < min) min = g;
+                if (g > max) max = g;
+            }
+            int range = max - min;
+            return range < 20 ? (min + max) / 2 : min + (int)(range * 0.4);
         }
         #endregion
     }

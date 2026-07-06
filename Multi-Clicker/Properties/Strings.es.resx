@@ -309,6 +309,12 @@
   <data name="PreferBackgroundClicks" xml:space="preserve">
     <value>Preferir clics en segundo plano</value>
   </data>
+  <data name="RefreshWindows" xml:space="preserve">
+    <value>Actualizar ventanas del juego</value>
+  </data>
+  <data name="DuplicateKeybindsWarning" xml:space="preserve">
+    <value>Varias acciones comparten el mismo atajo y se activarían todas a la vez. ¿Guardar de todos modos?</value>
+  </data>
   <data name="CharacterSelectionTitle" xml:space="preserve">
     <value>Selección de personajes</value>
   </data>

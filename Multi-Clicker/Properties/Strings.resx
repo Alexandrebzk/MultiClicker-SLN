@@ -309,6 +309,12 @@
   <data name="PreferBackgroundClicks" xml:space="preserve">
     <value>Prefer background clicks</value>
   </data>
+  <data name="RefreshWindows" xml:space="preserve">
+    <value>Refresh game windows</value>
+  </data>
+  <data name="DuplicateKeybindsWarning" xml:space="preserve">
+    <value>Several actions share the same shortcut and would all fire on a single press. Save anyway?</value>
+  </data>
   <data name="CharacterSelectionTitle" xml:space="preserve">
     <value>Character selection</value>
   </data>
