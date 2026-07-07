@@ -131,6 +131,26 @@ namespace MultiClicker.Services
         private static BlockingCollection<(TRIGGERS trigger, Action<object> action, object context)> _dispatchQueue;
         private static Thread _dispatchThread;
 
+        // Fire-on-release model. When a combination is satisfied on a key/mouse
+        // DOWN we do not execute immediately; we "arm" the trigger keyed by the
+        // triggering key/button and execute it on the matching UP. This
+        // guarantees no physical key/button is held when a broadcast starts
+        // (Windows blocks SetForegroundWindow while input is captured), which is
+        // what made the first target of a sweep miss its click. It also gives a
+        // single, consistent "fires just after you release the shortcut" feel.
+        private struct ArmedTrigger
+        {
+            public TRIGGERS Trigger;
+            public Action<object> Action;
+            public TimeSpan Cooldown;
+            public POINT Cursor;
+        }
+        private static readonly object ArmLock = new object();
+        private static readonly Dictionary<Keys, List<ArmedTrigger>> _armedByKey =
+            new Dictionary<Keys, List<ArmedTrigger>>();
+        private static readonly Dictionary<int, List<ArmedTrigger>> _armedByMouse =
+            new Dictionary<int, List<ArmedTrigger>>();
+
         // Pre-computed keybind indices for O(1) edge-triggered lookup.
         // Rebuilt on init and whenever ConfigurationService.KeybindsChanged fires.
         private static readonly object KeybindIndexLock = new object();
@@ -166,7 +186,13 @@ namespace MultiClicker.Services
         public static bool TriggersSuspended
         {
             get => _triggersSuspended;
-            set => _triggersSuspended = value;
+            set
+            {
+                _triggersSuspended = value;
+                // Drop anything armed just before suspension so it can't fire
+                // while (or right after) the keybinds dialog is open.
+                if (value) ClearArms();
+            }
         }
         #endregion
 
@@ -264,15 +290,19 @@ namespace MultiClicker.Services
                     }
                 }
 
-                // Only evaluate triggers when the foreground window is one we care
-                // about, and only on the *initial* down event (no auto-repeat).
+                // Arm matching triggers on the initial down (no auto-repeat) when
+                // the foreground is a tracked window; execute them on the release.
                 if (isDown && wasNewPress && !_triggersSuspended && !ConfigurationService.IsModifyingKeyBinds)
                 {
                     var fg = GetForegroundWindow();
                     if (WindowManagementService.IsRelatedHandle(fg))
                     {
-                        EvaluateKeyTriggers(key);
+                        ArmKeyTriggers(key);
                     }
+                }
+                else if (isUp)
+                {
+                    FireArmedKey(key);
                 }
             }
             catch (Exception ex)
@@ -329,6 +359,20 @@ namespace MultiClicker.Services
                     message == MouseMessages.WM_RBUTTONDOWN ||
                     message == MouseMessages.WM_MBUTTONDOWN ||
                     message == MouseMessages.WM_XBUTTONDOWN;
+                bool isMouseUp =
+                    message == MouseMessages.WM_LBUTTONUP ||
+                    message == MouseMessages.WM_RBUTTONUP ||
+                    message == MouseMessages.WM_MBUTTONUP ||
+                    message == MouseMessages.WM_XBUTTONUP;
+
+                // Execute any trigger armed on the matching button's DOWN, now
+                // that the button has been released.
+                if (isMouseUp)
+                {
+                    int upButtonId = MouseButtonId(message, xButton);
+                    if (upButtonId >= 0) FireArmedMouseButton(upButtonId);
+                    return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+                }
 
                 if (!isMouseDown)
                     return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
@@ -360,7 +404,7 @@ namespace MultiClicker.Services
                 if (WindowManagementService.IsRelatedHandle(fg) &&
                     WindowManagementService.IsPointOverTrackedWindow(mouseHookStruct.pt))
                 {
-                    EvaluateMouseTriggers(message, xButton, mouseHookStruct.pt);
+                    ArmMouseTriggers(message, xButton, mouseHookStruct.pt);
                 }
             }
             catch (Exception ex)
@@ -378,41 +422,96 @@ namespace MultiClicker.Services
         }
         #endregion
 
-        #region Trigger evaluation
-        private static void EvaluateKeyTriggers(Keys pressedKey)
+        #region Trigger arming (fire on release)
+        /// <summary>
+        /// Maps a mouse message + xButton payload to a stable button id used to
+        /// pair a DOWN arm with its UP execution. -1 for non-button messages.
+        /// </summary>
+        private static int MouseButtonId(MouseMessages message, int xButton)
+        {
+            switch (message)
+            {
+                case MouseMessages.WM_LBUTTONDOWN:
+                case MouseMessages.WM_LBUTTONUP: return 0;
+                case MouseMessages.WM_RBUTTONDOWN:
+                case MouseMessages.WM_RBUTTONUP: return 1;
+                case MouseMessages.WM_MBUTTONDOWN:
+                case MouseMessages.WM_MBUTTONUP: return 2;
+                case MouseMessages.WM_XBUTTONDOWN:
+                case MouseMessages.WM_XBUTTONUP: return xButton == 2 ? 4 : 3;
+                default: return -1;
+            }
+        }
+
+        private static int MouseButtonVk(int buttonId)
+        {
+            switch (buttonId)
+            {
+                case 0: return VK_LBUTTON;
+                case 1: return VK_RBUTTON;
+                case 2: return VK_MBUTTON;
+                case 3: return VK_XBUTTON1;
+                case 4: return VK_XBUTTON2;
+                default: return 0;
+            }
+        }
+
+        private static void Arm(Dictionary<int, List<ArmedTrigger>> map, int id, ArmedTrigger armed)
+        {
+            lock (ArmLock)
+            {
+                if (!map.TryGetValue(id, out var list))
+                    map[id] = list = new List<ArmedTrigger>();
+                // Replace an existing arm for the same trigger (re-press before release).
+                list.RemoveAll(a => a.Trigger == armed.Trigger);
+                list.Add(armed);
+            }
+        }
+
+        private static void ArmKey(Keys id, ArmedTrigger armed)
+        {
+            lock (ArmLock)
+            {
+                if (!_armedByKey.TryGetValue(id, out var list))
+                    _armedByKey[id] = list = new List<ArmedTrigger>();
+                list.RemoveAll(a => a.Trigger == armed.Trigger);
+                list.Add(armed);
+            }
+        }
+
+        private static void ArmKeyTriggers(Keys pressedKey)
         {
             List<KeyValuePair<TRIGGERS, KeyCombination>> candidates;
             lock (KeybindIndexLock)
             {
                 if (!_keybindsByKey.TryGetValue(pressedKey, out candidates) || candidates.Count == 0)
                     return;
-                // Copy to avoid holding the lock during evaluation.
                 candidates = new List<KeyValuePair<TRIGGERS, KeyCombination>>(candidates);
             }
 
-            // Keyboard-triggered actions still need a click position (e.g. a click
-            // broadcast bound to a key); snapshot the cursor at trigger time.
+            // Snapshot the cursor at press time (used by click broadcasts bound
+            // to a key); the position must be where the user acted.
             POINT cursor;
             if (!GetCursorPos(out cursor)) cursor = _cursorPosition;
 
             foreach (var kvp in candidates)
             {
-                // Keyboard-only triggers fire on key-down. Keybinds that *also*
-                // require a mouse button are handled on the mouse-down path.
                 if (kvp.Value.HasMouseButtons) continue;
+                if (!IsKeyCombinationPressed(kvp.Value)) continue;
+                if (!KeyActions.TryGetValue(kvp.Key, out var actionData)) continue;
 
-                if (IsKeyCombinationPressed(kvp.Value))
+                Trace.WriteLine($"Key combination armed: {kvp.Key} -> {kvp.Value}");
+                ArmKey(pressedKey, new ArmedTrigger
                 {
-                    Trace.WriteLine($"Key combination triggered: {kvp.Key} -> {kvp.Value}");
-                    if (KeyActions.TryGetValue(kvp.Key, out var actionData))
-                    {
-                        EnqueueTrigger(kvp.Key, actionData, cursor);
-                    }
-                }
+                    Trigger = kvp.Key,
+                    Action = actionData.action,
+                    Cooldown = actionData.minimumCooldown,
+                    Cursor = cursor
+                });
             }
         }
 
-        private static void EvaluateMouseTriggers(MouseMessages downMessage, int xButton, POINT cursor)
+        private static void ArmMouseTriggers(MouseMessages downMessage, int xButton, POINT cursor)
         {
             List<KeyValuePair<TRIGGERS, KeyCombination>> candidates;
             lock (KeybindIndexLock)
@@ -422,10 +521,13 @@ namespace MultiClicker.Services
                 candidates = new List<KeyValuePair<TRIGGERS, KeyCombination>>(candidates);
             }
 
+            int buttonId = MouseButtonId(downMessage, xButton);
+            if (buttonId < 0) return;
+
             foreach (var kvp in candidates)
             {
                 // Edge-trigger on the button that actually went down: an X1-bound
-                // combo must not fire because X2 was pressed while X1 was stuck.
+                // combo must not arm because X2 was pressed.
                 if (downMessage == MouseMessages.WM_XBUTTONDOWN)
                 {
                     bool matchesEvent = (kvp.Value.XButton1 && xButton == 1) ||
@@ -433,14 +535,91 @@ namespace MultiClicker.Services
                     if (!matchesEvent) continue;
                 }
 
-                if (IsKeyCombinationPressed(kvp.Value))
+                if (!IsKeyCombinationPressed(kvp.Value)) continue;
+                if (!KeyActions.TryGetValue(kvp.Key, out var actionData)) continue;
+
+                Trace.WriteLine($"Click combination armed: {kvp.Key} -> {kvp.Value}");
+                Arm(_armedByMouse, buttonId, new ArmedTrigger
                 {
-                    Trace.WriteLine($"Click combination triggered: {kvp.Key} -> {kvp.Value}");
-                    if (KeyActions.TryGetValue(kvp.Key, out var actionData))
-                    {
-                        EnqueueTrigger(kvp.Key, actionData, cursor);
-                    }
+                    Trigger = kvp.Key,
+                    Action = actionData.action,
+                    Cooldown = actionData.minimumCooldown,
+                    Cursor = cursor
+                });
+            }
+        }
+
+        private static void FireArmedKey(Keys releasedKey)
+        {
+            List<ArmedTrigger> armed;
+            lock (ArmLock)
+            {
+                if (!_armedByKey.TryGetValue(releasedKey, out armed) || armed.Count == 0) return;
+                _armedByKey.Remove(releasedKey);
+            }
+            foreach (var a in armed)
+            {
+                Trace.WriteLine($"Key trigger fired on release: {a.Trigger}");
+                EnqueueTrigger(a.Trigger, (a.Action, a.Cooldown), a.Cursor);
+            }
+        }
+
+        private static void FireArmedMouseButton(int buttonId)
+        {
+            List<ArmedTrigger> armed;
+            lock (ArmLock)
+            {
+                if (!_armedByMouse.TryGetValue(buttonId, out armed) || armed.Count == 0) return;
+                _armedByMouse.Remove(buttonId);
+            }
+            foreach (var a in armed)
+            {
+                Trace.WriteLine($"Click trigger fired on release: {a.Trigger}");
+                EnqueueTrigger(a.Trigger, (a.Action, a.Cooldown), a.Cursor);
+            }
+        }
+
+        /// <summary>
+        /// Safety net: if a release event was lost (focus change, load), fire any
+        /// armed trigger whose key/button the OS now reports as up. Runs from the
+        /// reconcile timer, outside InputLock, to avoid a lock-order inversion
+        /// with the arm path (which takes ArmLock then InputLock).
+        /// </summary>
+        private static void FireStaleArms()
+        {
+            List<Keys> armedKeys;
+            List<int> armedButtons;
+            lock (ArmLock)
+            {
+                if (_armedByKey.Count == 0 && _armedByMouse.Count == 0) return;
+                armedKeys = new List<Keys>(_armedByKey.Keys);
+                armedButtons = new List<int>(_armedByMouse.Keys);
+            }
+
+            foreach (var k in armedKeys)
+            {
+                if ((GetAsyncKeyState((int)k) & 0x8000) == 0)
+                {
+                    Trace.WriteLine($"[Reconcile] Firing armed key {k} (release event was missed).");
+                    FireArmedKey(k);
                 }
+            }
+            foreach (var b in armedButtons)
+            {
+                if ((GetAsyncKeyState(MouseButtonVk(b)) & 0x8000) == 0)
+                {
+                    Trace.WriteLine($"[Reconcile] Firing armed button {b} (release event was missed).");
+                    FireArmedMouseButton(b);
+                }
+            }
+        }
+
+        private static void ClearArms()
+        {
+            lock (ArmLock)
+            {
+                _armedByKey.Clear();
+                _armedByMouse.Clear();
             }
         }
         #endregion
@@ -616,6 +795,9 @@ namespace MultiClicker.Services
                     if (_xButton1Pressed && (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) == 0) _xButton1Pressed = false;
                     if (_xButton2Pressed && (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) == 0) _xButton2Pressed = false;
                 }
+
+                // Executed outside InputLock: fires arms whose release we missed.
+                FireStaleArms();
             }
             catch (Exception ex)
             {
@@ -638,6 +820,7 @@ namespace MultiClicker.Services
                 _xButton1Pressed = false;
                 _xButton2Pressed = false;
             }
+            ClearArms();
         }
         #endregion
 

@@ -136,6 +136,26 @@ namespace MultiClicker.Services
 
         [DllImport("user32.dll")]
         private static extern short VkKeyScan(char ch);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool BringWindowToTop(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetActiveWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetFocus(IntPtr hWnd);
         #endregion
 
         #region Input Structures
@@ -478,10 +498,39 @@ namespace MultiClicker.Services
                     ShowWindow(handle, Restore);
                 }
 
-                keybd_event((byte)ALT, 0x45, EXTENDEDKEY | 0, 0);
-                keybd_event((byte)ALT, 0x45, EXTENDEDKEY | KEYUP, 0);
+                if (GetForegroundWindow() == handle) return;
 
-                SetForegroundWindow(handle);
+                // AttachThreadInput ties our input queue to the target's UI thread
+                // (and the current foreground thread), which lifts the OS
+                // foreground lock so SetForegroundWindow actually takes effect.
+                // This is what makes the FIRST target of a broadcast sweep switch
+                // reliably instead of intermittently keeping the previous window.
+                uint currentThread = GetCurrentThreadId();
+                uint targetThread = GetWindowThreadProcessId(handle, out _);
+                uint foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), out _);
+
+                bool attachedTarget = false, attachedForeground = false;
+                try
+                {
+                    if (targetThread != 0 && targetThread != currentThread)
+                        attachedTarget = AttachThreadInput(currentThread, targetThread, true);
+                    if (foregroundThread != 0 && foregroundThread != currentThread && foregroundThread != targetThread)
+                        attachedForeground = AttachThreadInput(currentThread, foregroundThread, true);
+
+                    // ALT tap: a further safeguard that grants foreground rights.
+                    keybd_event((byte)ALT, 0x45, EXTENDEDKEY | 0, 0);
+                    keybd_event((byte)ALT, 0x45, EXTENDEDKEY | KEYUP, 0);
+
+                    BringWindowToTop(handle);
+                    SetForegroundWindow(handle);
+                    SetActiveWindow(handle);
+                    SetFocus(handle);
+                }
+                finally
+                {
+                    if (attachedTarget) AttachThreadInput(currentThread, targetThread, false);
+                    if (attachedForeground) AttachThreadInput(currentThread, foregroundThread, false);
+                }
             }
             catch (Exception ex)
             {
@@ -693,10 +742,10 @@ namespace MultiClicker.Services
         private static bool PerformForegroundClick(IntPtr windowHandle, int screenX, int screenY, int delay, bool doubleClick)
         {
             bool focused = false;
-            for (int attempt = 0; attempt < 2 && !focused; attempt++)
+            for (int attempt = 0; attempt < 3 && !focused; attempt++)
             {
                 SetHandleToForeground(windowHandle);
-                focused = WaitForForeground(windowHandle, 250);
+                focused = WaitForForeground(windowHandle, 300);
             }
             if (!focused) return false;
 
