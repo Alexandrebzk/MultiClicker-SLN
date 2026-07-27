@@ -717,10 +717,12 @@ namespace MultiClicker.Services
             KeyActions[TRIGGERS.GROUP_CHARACTERS] = (obj => WindowManagementService.GroupCharacters(), TimeSpan.FromMilliseconds(1000));
             KeyActions[TRIGGERS.OPTIONS] = (obj => ShouldOpenPositionConfiguration?.Invoke(), TimeSpan.FromMilliseconds(1000));
             KeyActions[TRIGGERS.PASTE_ON_ALL_WINDOWS] = (obj => HandlePasteOnAllWindows(), TimeSpan.FromMilliseconds(500));
+            // Short settle so the game has repainted the panel after the click
+            // that triggered us; the trigger already fires on button release, so
+            // there is nothing else to wait for.
             KeyActions[TRIGGERS.FILL_HDV] = (obj =>
             {
-                Trace.WriteLine("Starting price analysis");
-                Thread.Sleep(500);
+                Thread.Sleep(80);
                 WindowManagementService.FillSellPriceBasedOnForeGroundWindow();
             }, TimeSpan.FromMilliseconds(500));
         }

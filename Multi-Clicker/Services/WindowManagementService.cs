@@ -1027,7 +1027,7 @@ namespace MultiClicker.Services
         /// layout the top-row digits require Shift, and injecting the bare key
         /// would type "&amp;é\"'(-è_çà" instead of numbers.
         /// </summary>
-        private static void TypeDigitsToFocusedField(string digits, int perKeyDelayMs = 25)
+        private static void TypeDigitsToFocusedField(string digits, int perKeyDelayMs = 12)
         {
             foreach (char c in digits)
             {
@@ -1050,19 +1050,19 @@ namespace MultiClicker.Services
         /// Empties the focused text field: select-all + Delete, then a run of
         /// End+BackSpace as a fallback for fields that ignore Ctrl+A.
         /// </summary>
-        private static void ClearFocusedField(int expectedMaxLength = 12)
+        private static void ClearFocusedField(int expectedMaxLength = 10)
         {
             TapKey(Keys.A, new[] { Keys.LControlKey });
-            Thread.Sleep(60);
+            Thread.Sleep(20);
             TapKey(Keys.Delete);
-            Thread.Sleep(60);
+            Thread.Sleep(20);
 
             TapKey(Keys.End);
-            Thread.Sleep(30);
+            Thread.Sleep(12);
             for (int i = 0; i < expectedMaxLength; i++)
             {
                 TapKey(Keys.Back);
-                Thread.Sleep(15);
+                Thread.Sleep(8);
             }
         }
 
@@ -1326,10 +1326,10 @@ namespace MultiClicker.Services
                 // SendKeys was used here previously; it injects virtual keys with
                 // no scan code, which Dofus (Unity Raw Input) discards - the price
                 // was recognized correctly but never appeared in the field.
-                Thread.Sleep(100);
+                var sw = Stopwatch.StartNew();
                 ClearFocusedField();
                 TypeDigitsToFocusedField(amountToFill.ToString());
-                Trace.WriteLine($"FILL_HDV: typed {amountToFill}.");
+                Trace.WriteLine($"FILL_HDV: typed {amountToFill} in {sw.ElapsedMilliseconds} ms.");
             }
             catch (Exception ex)
             {
