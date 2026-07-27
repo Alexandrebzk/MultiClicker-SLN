@@ -136,6 +136,29 @@ namespace MultiClicker.Services
 
         [DllImport("user32.dll")]
         private static extern short VkKeyScan(char ch);
+
+        [DllImport("user32.dll")]
+        private static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool BringWindowToTop(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetActiveWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetFocus(IntPtr hWnd);
         #endregion
 
         #region Input Structures
@@ -478,10 +501,39 @@ namespace MultiClicker.Services
                     ShowWindow(handle, Restore);
                 }
 
-                keybd_event((byte)ALT, 0x45, EXTENDEDKEY | 0, 0);
-                keybd_event((byte)ALT, 0x45, EXTENDEDKEY | KEYUP, 0);
+                if (GetForegroundWindow() == handle) return;
 
-                SetForegroundWindow(handle);
+                // AttachThreadInput ties our input queue to the target's UI thread
+                // (and the current foreground thread), which lifts the OS
+                // foreground lock so SetForegroundWindow actually takes effect.
+                // This is what makes the FIRST target of a broadcast sweep switch
+                // reliably instead of intermittently keeping the previous window.
+                uint currentThread = GetCurrentThreadId();
+                uint targetThread = GetWindowThreadProcessId(handle, out _);
+                uint foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), out _);
+
+                bool attachedTarget = false, attachedForeground = false;
+                try
+                {
+                    if (targetThread != 0 && targetThread != currentThread)
+                        attachedTarget = AttachThreadInput(currentThread, targetThread, true);
+                    if (foregroundThread != 0 && foregroundThread != currentThread && foregroundThread != targetThread)
+                        attachedForeground = AttachThreadInput(currentThread, foregroundThread, true);
+
+                    // ALT tap: a further safeguard that grants foreground rights.
+                    keybd_event((byte)ALT, 0x45, EXTENDEDKEY | 0, 0);
+                    keybd_event((byte)ALT, 0x45, EXTENDEDKEY | KEYUP, 0);
+
+                    BringWindowToTop(handle);
+                    SetForegroundWindow(handle);
+                    SetActiveWindow(handle);
+                    SetFocus(handle);
+                }
+                finally
+                {
+                    if (attachedTarget) AttachThreadInput(currentThread, targetThread, false);
+                    if (attachedForeground) AttachThreadInput(currentThread, foregroundThread, false);
+                }
             }
             catch (Exception ex)
             {
@@ -693,10 +745,10 @@ namespace MultiClicker.Services
         private static bool PerformForegroundClick(IntPtr windowHandle, int screenX, int screenY, int delay, bool doubleClick)
         {
             bool focused = false;
-            for (int attempt = 0; attempt < 2 && !focused; attempt++)
+            for (int attempt = 0; attempt < 3 && !focused; attempt++)
             {
                 SetHandleToForeground(windowHandle);
-                focused = WaitForForeground(windowHandle, 250);
+                focused = WaitForForeground(windowHandle, 300);
             }
             if (!focused) return false;
 
@@ -890,8 +942,49 @@ namespace MultiClicker.Services
             Thread.Sleep(Math.Max(10, delay));
         }
 
+        private const uint MAPVK_VK_TO_VSC = 0;
+        private const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+
+        /// <summary>
+        /// Keys that must carry the extended-key flag; without it the OS maps
+        /// them onto their numeric-keypad twins (Delete becomes numpad '.', etc).
+        /// </summary>
+        private static bool IsExtendedKey(Keys key)
+        {
+            switch (key)
+            {
+                case Keys.Insert:
+                case Keys.Delete:
+                case Keys.Home:
+                case Keys.End:
+                case Keys.PageUp:
+                case Keys.PageDown:
+                case Keys.Left:
+                case Keys.Right:
+                case Keys.Up:
+                case Keys.Down:
+                case Keys.NumLock:
+                case Keys.RControlKey:
+                case Keys.RMenu:
+                case Keys.Divide:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// Builds a keyboard INPUT carrying BOTH the virtual key and its hardware
+        /// scan code. Dofus 3.x (Unity) consumes Raw Input, which reports the scan
+        /// code: events injected with wScan = 0 are seen as "key 0" and dropped.
+        /// This is why the codebase already sends TAB/ENTER via keybd_event with
+        /// explicit scan codes.
+        /// </summary>
         private static INPUT KeyInput(Keys key, uint flags)
         {
+            uint scan = MapVirtualKey((uint)key, MAPVK_VK_TO_VSC);
+            if (IsExtendedKey(key)) flags |= KEYEVENTF_EXTENDEDKEY;
+
             return new INPUT
             {
                 type = INPUT_KEYBOARD,
@@ -900,13 +993,77 @@ namespace MultiClicker.Services
                     ki = new KEYBDINPUT
                     {
                         wVk = (ushort)key,
-                        wScan = 0,
+                        wScan = (ushort)scan,
                         dwFlags = flags,
                         time = 0,
                         dwExtraInfo = IntPtr.Zero
                     }
                 }
             };
+        }
+
+        /// <summary>
+        /// Presses then releases a single key (with modifiers held around it),
+        /// as one atomic SendInput batch.
+        /// </summary>
+        private static void TapKey(Keys key, Keys[] modifiers = null)
+        {
+            var inputs = new List<INPUT>();
+            if (modifiers != null)
+                foreach (var m in modifiers) inputs.Add(KeyInput(m, 0));
+
+            inputs.Add(KeyInput(key, 0));
+            inputs.Add(KeyInput(key, KEYEVENTF_KEYUP));
+
+            if (modifiers != null)
+                for (int i = modifiers.Length - 1; i >= 0; i--) inputs.Add(KeyInput(modifiers[i], KEYEVENTF_KEYUP));
+
+            SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf(typeof(INPUT)));
+        }
+
+        /// <summary>
+        /// Types digits into whichever control currently has keyboard focus.
+        /// Uses VkKeyScan so the active layout is respected: on the French AZERTY
+        /// layout the top-row digits require Shift, and injecting the bare key
+        /// would type "&amp;é\"'(-è_çà" instead of numbers.
+        /// </summary>
+        private static void TypeDigitsToFocusedField(string digits, int perKeyDelayMs = 12)
+        {
+            foreach (char c in digits)
+            {
+                short scan = VkKeyScan(c);
+                if (scan == -1)
+                {
+                    Trace.WriteLine($"Cannot map character '{c}' on the current keyboard layout.");
+                    continue;
+                }
+
+                var key = (Keys)(scan & 0xFF);
+                bool needsShift = (scan & 0x100) != 0;
+
+                TapKey(key, needsShift ? new[] { Keys.LShiftKey } : null);
+                Thread.Sleep(perKeyDelayMs);
+            }
+        }
+
+        /// <summary>
+        /// Empties the focused text field: select-all + Delete, then a run of
+        /// End+BackSpace as a fallback for fields that ignore Ctrl+A.
+        /// </summary>
+        private static void ClearFocusedField(int expectedMaxLength = 10)
+        {
+            TapKey(Keys.A, new[] { Keys.LControlKey });
+            Thread.Sleep(20);
+            TapKey(Keys.Delete);
+            Thread.Sleep(20);
+
+            TapKey(Keys.End);
+            Thread.Sleep(12);
+            for (int i = 0; i < expectedMaxLength; i++)
+            {
+                TapKey(Keys.Back);
+                Thread.Sleep(8);
+            }
         }
 
         /// <summary>
@@ -1156,13 +1313,23 @@ namespace MultiClicker.Services
                 }
 
                 int amountToFill = price - 1;
-                Trace.WriteLine($"FILL_HDV: sell quantity x{mode}, market price {price}, filling {amountToFill}");
+                var target = GetForegroundWindow();
+                Trace.WriteLine($"FILL_HDV: sell quantity x{mode}, market price {price}, filling {amountToFill} " +
+                                $"into focused window '{GetWindowTitle(target)}' (tracked: {IsRelatedHandle(target)})");
 
-                Thread.Sleep(100);
-                SendKeys.SendWait("^a");
-                Thread.Sleep(200);
-                SendKeys.SendWait("{DELETE}");
-                SendKeys.SendWait(amountToFill.ToString());
+                // Warn only: window tracking can lag behind a client relog, and
+                // refusing to type would be a worse failure than typing into a
+                // window the user themselves just clicked.
+                if (!IsRelatedHandle(target))
+                    Trace.WriteLine("FILL_HDV warning: focused window is not in the tracked client list.");
+
+                // SendKeys was used here previously; it injects virtual keys with
+                // no scan code, which Dofus (Unity Raw Input) discards - the price
+                // was recognized correctly but never appeared in the field.
+                var sw = Stopwatch.StartNew();
+                ClearFocusedField();
+                TypeDigitsToFocusedField(amountToFill.ToString());
+                Trace.WriteLine($"FILL_HDV: typed {amountToFill} in {sw.ElapsedMilliseconds} ms.");
             }
             catch (Exception ex)
             {
