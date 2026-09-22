@@ -90,6 +90,21 @@ Write-Host "    EXE        : $(Split-Path $exePath -Leaf) ($([math]::Round((Get-
 Write-Host "    tessdata/  : $tessCount file(s)"
 Write-Host "    cosmetics/ : $cosCount file(s)"
 
+# Ship the VC++ redistributable so a fresh machine can satisfy the Tesseract
+# native dependency without hunting for a download.
+$prereqSrc = Join-Path $repoRoot 'prerequisites'
+if (Test-Path $prereqSrc) {
+    $prereqDst = Join-Path $publishDir 'prerequisites'
+    New-Item -ItemType Directory -Force -Path $prereqDst | Out-Null
+    Copy-Item -Path (Join-Path $prereqSrc '*') -Destination $prereqDst -Recurse -Force
+}
+
+# Drop a first-run README next to the EXE.
+$quickStart = Join-Path $repoRoot 'packaging\READ-ME-FIRST.txt'
+if (Test-Path $quickStart) {
+    Copy-Item -Path $quickStart -Destination (Join-Path $publishDir 'READ-ME-FIRST.txt') -Force
+}
+
 # Package as zip in dist/.
 if (-not (Test-Path $distDir)) { New-Item -ItemType Directory -Path $distDir | Out-Null }
 $zipPath = Join-Path $distDir "MultiClicker-v$Version.zip"
