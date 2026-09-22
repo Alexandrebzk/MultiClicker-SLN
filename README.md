@@ -140,7 +140,7 @@ Provides optical character recognition powered by Tesseract:
 
 ### 📋 **System Requirements**
 - **Operating System**: Windows 10/11 (64-bit recommended)
-- **.NET Framework**: 4.8 or higher
+- **.NET Runtime**: none required — release builds are self-contained (.NET 8 bundled)
 - **Visual C++ Redistributable**: Included in prerequisites folder
 - **Game Client**: Dofus (any recent version)
 - **Privileges**: Administrator rights recommended for full functionality but not necessary

@@ -1,0 +1,37 @@
+MultiClicker - quick start
+==========================
+
+1. Extract this whole folder somewhere you can write to
+   (Documents, Desktop - NOT "Program Files", and do not run it
+   from inside the .zip: the app writes config.json next to the EXE).
+
+2. If this is a fresh Windows install, run once:
+       prerequisites\vc_redist.x64.exe
+   It provides the Visual C++ runtime the OCR engine (Tesseract) needs.
+   If MultiClicker starts fine, you can skip it.
+
+3. Run MultiClicker.exe.
+   Right-click > "Run as administrator" is recommended so the global
+   shortcuts keep working while the game window has focus. It is not
+   mandatory.
+
+   Windows SmartScreen may warn about an unsigned app:
+   "More info" > "Run anyway".
+
+4. Start your Dofus clients. Their windows are detected automatically
+   and a panel appears for each one.
+
+On first launch a default config.json is created next to the EXE. Edit it
+from inside the app (keybinds dialog / panel settings) - it is saved
+automatically.
+
+What is in this folder
+----------------------
+  MultiClicker.exe       the app (self-contained, no .NET install needed)
+  tessdata\              OCR language data (eng, fra) - required
+  cosmetics\             panel background images
+  prerequisites\         Visual C++ redistributable (see step 2)
+  config.json            created on first launch
+
+Full documentation and issue tracker:
+  https://github.com/Alexandrebzk/MultiClicker-SLN
